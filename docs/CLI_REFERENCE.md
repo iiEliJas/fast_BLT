@@ -878,3 +878,9 @@ build-cuda/infer_bench --plain runs/plain_40k.fblt --bltd runs/bltd_l03_40k.fblt
 ```bash
 cmake --build build-cuda --target train_sweep
 ```
+
+### Speedrun (fblt.speedrun)
+
+| Command | Description |
+|---|---|
+| `python -m fblt.speedrun --config PATH --out DIR` | Run a reproducible speedrun, writing `DIR/result.json` |

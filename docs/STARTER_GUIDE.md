@@ -218,6 +218,17 @@ Loading weights without optimizer state restarts AdamW cold. Use `--start-step N
 
 For ergonomic runs, use `--save-dir DIR` (writes `DIR/checkpoints/*.fblt`) and `--resume auto|latest|best` to pick the newest or lowest-`best_loss` checkpoint. Atomic writes (`.tmp` + fsync + replace) avoid partial files. Inspect a checkpoint with `python -m fblt.model_info PATH`.
 
+### Reproducible speedruns (item 15)
+
+`fblt/speedrun.py` provides a thin reproducible runner and leaderboard aggregator:
+
+```bash
+python -m fblt.speedrun --config configs/train/production.yaml --out runs/speedrun/run1
+python -c "from fblt.speedrun import aggregate_leaderboard; aggregate_leaderboard('runs/speedrun','runs/leaderboard.json')"
+```
+
+It records the resolved config and writes `result.json` per run; `aggregate_leaderboard` collects them into one JSON. (Training invocation integration is a follow-up; currently the runner records metadata only.)
+
 ### Best checkpoints
 
 Save weights only when an eval metric improves:
