@@ -899,3 +899,11 @@ CLI: `python -m fblt.dataset --list|--download NAME|--verify NAME`.
 | `python -m fblt.eval --task bpb --checkpoint PATH --corpus FILE --out eval.json` | Run evaluation, write JSON record |
 | `... --few-shot N` | Few-shot mode (0 = zero-shot) |
 | `... --csv out.csv` | Also write CSV |
+
+### Hugging Face (fblt.hf_export)
+
+| Function | Description |
+|---|---|
+| `export_to_hf(fblt_path, out_dir)` | Export checkpoint to HF-style dir (config.json + model.fblt) |
+| `import_from_hf(hf_dir, out_path)` | Import back to fBLT checkpoint |
+| `verify_roundtrip(...)` | Verify byte-identical reload |
