@@ -61,6 +61,10 @@ def main():
     rec = run_task(args.task, args.checkpoint, args.corpus, args.few_shot, args.backend, args.out)
     if args.csv:
         write_csv([rec], args.csv)
+    print("task,checkpoint,backend,few_shot,bpb,accuracy")
+    print(
+        f"{rec['task']},{rec['checkpoint']},{rec['backend']},{rec['few_shot']},{rec['metrics']['bpb']},{rec['metrics']['accuracy']}"
+    )
     print(json.dumps(rec, indent=2))
 
 
