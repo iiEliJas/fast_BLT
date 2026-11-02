@@ -95,6 +95,7 @@ set(BLT_CORE_SOURCES
   csrc/core/generate_greedy.c
   csrc/core/decode_select.c
   csrc/core/flops.c
+  csrc/core/device_info.c
 )
 
 # CUDA sources (only when USE_CUDA is ON)

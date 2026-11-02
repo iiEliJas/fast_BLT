@@ -49,6 +49,7 @@
 #include "train_eval.h"
 #include "train_schedule.h"
 #include "core/flops.h"
+#include "core/device_info.h"
 
 // Substitutes the first %d in path with step when the path is a template;
 // otherwise copies path verbatim into buf.
@@ -360,6 +361,16 @@ int main(int argc, char **argv) {
         return 1;
     }
     const blt_backend dev = a.use_cuda ? BLT_BACKEND_CUDA : BLT_BACKEND_CPU;
+#ifdef USE_CUDA
+    if (a.use_cuda && a.peak_tflops <= 0.0f) {
+        cudaDeviceProp prop;
+        if (cudaGetDeviceProperties(&prop, 0) == cudaSuccess) {
+            const blt_device_spec *spec = blt_device_lookup(prop.name);
+            if (spec) a.peak_tflops = (float)spec->bf16_tflops; // default to bf16 peak
+            else fprintf(stderr, "warning: unknown CUDA device '%s'; MFU omitted\n", prop.name);
+        }
+    }
+#endif
     g_blt_deterministic = a.deterministic;
 #ifdef BLT_WITH_CUDA
     if (a.use_cuda && a.cuda_scratch_mb > 0) blt_cuda_set_scratch_size(a.cuda_scratch_mb * 1024ULL * 1024);

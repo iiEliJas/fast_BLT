@@ -319,3 +319,17 @@ Training speedup scales with model size (30x → 76x from E=64 to E=192) because
 | bf16/fp32 ratio at 512 | 1.9x | |
 | bf16/fp32 ratio at 1024 | 2.8x | |
 | bf16/fp32 ratio at 2048 | 3.1x | |
+
+## Device table and MFU/MBU
+
+Peak FLOPS and HBM bandwidth are looked up by CUDA device name via
+`csrc/core/device_info.c` (table of reference peaks; boost-clock assumptions).
+Unknown devices return NULL and MFU is omitted rather than dividing by zero.
+
+Formulas:
+- MFU = achieved_tflops / peak_tflops
+- MBU = (bytes_moved_gb / time_s) / bandwidth_gbps
+
+Overrides: `--peak-tflops`, `--peak-bandwidth` take precedence over the table.
+To add a device, append an entry to `BLT_DEVICE_TABLE` in `csrc/core/device_info.c`
+with source (datasheet) in a comment.
