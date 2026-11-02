@@ -210,6 +210,8 @@ SGD uses vanilla gradient descent with global-norm clip at 5.0. AdamW uses the s
 | Flag | Description |
 |------|-------------|
 | `--save-weights PATH` | Write weights after training; if PATH contains `%d`, the first `%d` is replaced by the step number |
+| `--save-dir DIR` | Directory convention: writes `DIR/checkpoints/*.fblt` (ergonomic alternative to `--save-weights`) |
+| `--resume auto|latest|best` | Resume from a checkpoint under `--save-dir` (best = lowest `best_loss`) |
 | `--save-every N` | Save checkpoint every N steps (0 = only at end) |
 | `--load-weights PATH` | Load weights before training (steps=0 → eval only) |
 | `--save-optim PATH` | Write AdamW moments and step counter alongside the weights |
@@ -876,3 +878,9 @@ build-cuda/infer_bench --plain runs/plain_40k.fblt --bltd runs/bltd_l03_40k.fblt
 ```bash
 cmake --build build-cuda --target train_sweep
 ```
+
+### Speedrun (fblt.speedrun)
+
+| Command | Description |
+|---|---|
+| `python -m fblt.speedrun --config PATH --out DIR` | Run a reproducible speedrun, writing `DIR/result.json` |
