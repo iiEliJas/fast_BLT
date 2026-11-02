@@ -222,6 +222,10 @@ For ergonomic runs, use `--save-dir DIR` (writes `DIR/checkpoints/*.fblt`) and `
 
 Cache layout: `$FBLT_CACHE` (default `~/.cache/fblt`)/datasets/<name>/ with manifest.json and shard-*.bin. CLI: `python -m fblt.dataset --list|--download NAME|--verify NAME`. Manifest records license, source, size, SHA-256.
 
+### Data pipeline
+
+Document-aware windowing: `fblt/data_pipeline.py` provides `windows_for_docs`, `pack_documents`, `stream_corpus` (mmap), and resumable sampler state helpers. Boundary modes: mask|sentinel|off. Sharding via `--corpus-shards/--shard-index/--shard-count` (planned). Sampler state persisted as JSON sidecar.
+
 ### Reproducible speedruns (item 15)
 
 `fblt/speedrun.py` provides a thin reproducible runner and leaderboard aggregator:
