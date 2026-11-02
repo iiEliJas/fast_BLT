@@ -218,6 +218,10 @@ Loading weights without optimizer state restarts AdamW cold. Use `--start-step N
 
 For ergonomic runs, use `--save-dir DIR` (writes `DIR/checkpoints/*.fblt`) and `--resume auto|latest|best` to pick the newest or lowest-`best_loss` checkpoint. Atomic writes (`.tmp` + fsync + replace) avoid partial files. Inspect a checkpoint with `python -m fblt.model_info PATH`.
 
+### Datasets
+
+Cache layout: `$FBLT_CACHE` (default `~/.cache/fblt`)/datasets/<name>/ with manifest.json and shard-*.bin. CLI: `python -m fblt.dataset --list|--download NAME|--verify NAME`. Manifest records license, source, size, SHA-256.
+
 ### Reproducible speedruns (item 15)
 
 `fblt/speedrun.py` provides a thin reproducible runner and leaderboard aggregator:
