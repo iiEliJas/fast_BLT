@@ -891,3 +891,11 @@ Cache layout: `$FBLT_CACHE` (default `~/.cache/fblt`)/datasets/<name>/ with mani
 CLI: `python -m fblt.dataset --list|--download NAME|--verify NAME`.
 
 | `--doc-boundaries MODE` | off | Document boundary handling: off, mask, sentinel |
+
+### Evaluation (fblt.eval)
+
+| Command | Description |
+|---|---|
+| `python -m fblt.eval --task bpb --checkpoint PATH --corpus FILE --out eval.json` | Run evaluation, write JSON record |
+| `... --few-shot N` | Few-shot mode (0 = zero-shot) |
+| `... --csv out.csv` | Also write CSV |
