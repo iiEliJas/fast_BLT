@@ -889,3 +889,5 @@ cmake --build build-cuda --target train_sweep
 
 Cache layout: `$FBLT_CACHE` (default `~/.cache/fblt`)/datasets/<name>/ with manifest.json and shard-*.bin.
 CLI: `python -m fblt.dataset --list|--download NAME|--verify NAME`.
+
+| `--doc-boundaries MODE` | off | Document boundary handling: off, mask, sentinel |

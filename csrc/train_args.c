@@ -162,7 +162,8 @@ args_t parse_args(int argc, char **argv) {
                 .scratch_mb = 0,
                 .model_mb = 0,
                 .peak_tflops = 0.0f,
-                .peak_bandwidth = 0.0f};
+                .peak_bandwidth = 0.0f,
+                .doc_boundaries = "off"};
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--corpus") && i + 1 < argc) a.corpus_path = argv[++i];
@@ -277,6 +278,8 @@ args_t parse_args(int argc, char **argv) {
         else if (!strcmp(argv[i], "--model-mb") && i + 1 < argc) a.model_mb = strtoull(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--peak-tflops") && i + 1 < argc) a.peak_tflops = atof(argv[++i]);
         else if (!strcmp(argv[i], "--peak-bandwidth") && i + 1 < argc) a.peak_bandwidth = atof(argv[++i]);
+        else if (!strcmp(argv[i], "--doc-boundaries") && i + 1 < argc)
+            snprintf(a.doc_boundaries, sizeof(a.doc_boundaries), "%s", argv[++i]);
         else if (!strcmp(argv[i], "--deterministic")) a.deterministic = 1;
         else if (!strcmp(argv[i], "--bf16")) a.bf16 = 1;
         else if (!strcmp(argv[i], "--fp8")) a.fp8 = 1;
