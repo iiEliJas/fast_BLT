@@ -40,6 +40,7 @@ int main(void) {
         {"lr schedule", run_lr_schedule_tests},
         {"decode select sampling", run_decode_select_tests},
         {"patch capacity consistency", run_patch_capacity_consistency_tests},
+        {"device info table", run_device_info_tests},
     };
 
     const test_case model_tests[] = {
