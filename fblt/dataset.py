@@ -2,7 +2,11 @@
 
 import argparse
 import dataclasses
-import fcntl
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 import hashlib
 import json
 import os
@@ -74,7 +78,8 @@ def download_one(url, dest, sha256=None, retries=3):
 def acquire_lock(name):
     lock_path = os.path.join(dataset_dir(name), ".lock")
     fh = open(lock_path, "w")
-    fcntl.flock(fh, fcntl.LOCK_EX)
+    if fcntl is not None:
+        fcntl.flock(fh, fcntl.LOCK_EX)
     return fh
 
 
@@ -109,7 +114,8 @@ def download_dataset(name):
         os.replace(tmp, manifest_path)
         return manifest_path
     finally:
-        fcntl.flock(fh, fcntl.LOCK_UN)
+        if fcntl is not None:
+            fcntl.flock(fh, fcntl.LOCK_UN)
         fh.close()
 
 
