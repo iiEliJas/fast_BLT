@@ -884,3 +884,8 @@ cmake --build build-cuda --target train_sweep
 | Command | Description |
 |---|---|
 | `python -m fblt.speedrun --config PATH --out DIR` | Run a reproducible speedrun, writing `DIR/result.json` |
+
+### Datasets
+
+Cache layout: `$FBLT_CACHE` (default `~/.cache/fblt`)/datasets/<name>/ with manifest.json and shard-*.bin.
+CLI: `python -m fblt.dataset --list|--download NAME|--verify NAME`.
