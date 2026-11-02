@@ -228,7 +228,6 @@ python -c "from fblt.speedrun import aggregate_leaderboard; aggregate_leaderboar
 ```
 
 It records the resolved config and writes `result.json` per run; `aggregate_leaderboard` collects them into one JSON. (Training invocation integration is a follow-up; currently the runner records metadata only.)
-
 ### Best checkpoints
 
 Save weights only when an eval metric improves:
