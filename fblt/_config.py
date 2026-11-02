@@ -131,6 +131,7 @@ class TrainConfig:
     model_mb: int = 0
     peak_tflops: float = 0.0
     peak_bandwidth: float = 0.0
+    doc_boundaries: str = "off"
 
     grad_norm_log: typing.Optional[str] = None
     update_norm_log: typing.Optional[str] = None

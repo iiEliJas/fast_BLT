@@ -89,6 +89,7 @@ typedef struct {
     size_t model_mb;
     float peak_tflops;
     float peak_bandwidth;
+    char doc_boundaries[16]; // off|mask|sentinel
 } args_t;
 
 // Parse command-line arguments into args_t with default values.
