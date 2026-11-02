@@ -216,6 +216,8 @@ fblt-train --config configs/train/production.yaml --backend cuda --steps 300000 
 
 Loading weights without optimizer state restarts AdamW cold. Use `--start-step N` to override the stored counter.
 
+For ergonomic runs, use `--save-dir DIR` (writes `DIR/checkpoints/*.fblt`) and `--resume auto|latest|best` to pick the newest or lowest-`best_loss` checkpoint. Atomic writes (`.tmp` + fsync + replace) avoid partial files. Inspect a checkpoint with `python -m fblt.model_info PATH`.
+
 ### Best checkpoints
 
 Save weights only when an eval metric improves:

@@ -115,6 +115,8 @@ class TrainConfig:
     eval_every: int = 0
 
     save_weights: typing.Optional[str] = None
+    save_dir: typing.Optional[str] = None
+    resume: typing.Optional[str] = None
     save_optim: typing.Optional[str] = None
     save_every: int = 0
     save_best: typing.Optional[str] = None
