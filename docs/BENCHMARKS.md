@@ -322,14 +322,92 @@ Training speedup scales with model size (30x → 76x from E=64 to E=192) because
 
 ## Device table and MFU/MBU
 
-Peak FLOPS and HBM bandwidth are looked up by CUDA device name via
-`csrc/core/device_info.c` (table of reference peaks; boost-clock assumptions).
-Unknown devices return NULL and MFU is omitted rather than dividing by zero.
+Peak FLOPS and HBM bandwidth come from `csrc/core/device_info.c`. The trainer
+looks the running CUDA device name up in that table at startup and reports MFU
+per report window plus a final MBU in `RESULT`. `infer_bench` uses the same table
+for inference MBU.
 
 Formulas:
+
 - MFU = achieved_tflops / peak_tflops
 - MBU = (bytes_moved_gb / time_s) / bandwidth_gbps
 
-Overrides: `--peak-tflops`, `--peak-bandwidth` take precedence over the table.
-To add a device, append an entry to `BLT_DEVICE_TABLE` in `csrc/core/device_info.c`
-with source (datasheet) in a comment.
+### Reference peaks
+
+All values are theoretical dense tensor peaks at boost clock, not measured
+throughput. FP8 is only defined for Ada/Hopper (and later); Turing has no FP8
+tensor cores, so `NVIDIA T4` carries `fp8 = 0`.
+
+| Device | FP32 TFLOP/s | BF16 TFLOP/s | FP8 TFLOP/s | HBM GB/s | Source |
+|---|---:|---:|---:|---:|---|
+| NVIDIA GeForce RTX 4060 | 15.1 | 30.2 | 60.4 | 272.0 | [Ada product page](https://www.nvidia.com/en-us/geforce/graphics-cards/40-series/) |
+| NVIDIA GeForce RTX 4060 Ti | 22.1 | 44.1 | 88.2 | 288.0 | [Ada product page](https://www.nvidia.com/en-us/geforce/graphics-cards/40-series/) |
+| NVIDIA GeForce RTX 4070 | 29.1 | 58.3 | 116.5 | 504.0 | [Ada product page](https://www.nvidia.com/en-us/geforce/graphics-cards/40-series/) |
+| NVIDIA GeForce RTX 4070 Ti | 40.1 | 80.1 | 160.1 | 504.0 | [Ada product page](https://www.nvidia.com/en-us/geforce/graphics-cards/40-series/) |
+| NVIDIA GeForce RTX 4080 | 48.7 | 97.5 | 194.9 | 716.8 | [Ada product page](https://www.nvidia.com/en-us/geforce/graphics-cards/40-series/) |
+| NVIDIA GeForce RTX 4090 | 82.6 | 165.2 | 330.3 | 1008.0 | [Ada product page](https://www.nvidia.com/en-us/geforce/graphics-cards/40-series/) |
+| NVIDIA A100 (SXM4-40GB) | 19.5 | 312.0 | 624.0 | 1555.0 | [A100 datasheet](https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet-us-nvidia-1758950-r4-web.pdf) |
+| NVIDIA A100-SXM4-80GB | 19.5 | 312.0 | 624.0 | 2039.0 | [A100 datasheet](https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet-us-nvidia-1758950-r4-web.pdf) |
+| NVIDIA A100-PCIE-40GB | 19.5 | 312.0 | 624.0 | 1555.0 | [A100 datasheet](https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet-us-nvidia-1758950-r4-web.pdf) |
+| NVIDIA A100-PCIE-80GB / A100 80GB PCIe / generic `A100-PCIE` | 19.5 | 312.0 | 624.0 | 1935.0 | [A100 datasheet](https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet-us-nvidia-1758950-r4-web.pdf) |
+| NVIDIA H100 (SXM) | 67.0 | 989.0 | 1979.0 | 3350.0 | [H100 datasheet](https://resources.nvidia.com/en-us-tensor-core/nvidia-tensor-core-gpu-datasheet) |
+| NVIDIA H100 PCIe | 51.0 | 756.0 | 1513.0 | 2000.0 | [H100 datasheet](https://resources.nvidia.com/en-us-tensor-core/nvidia-tensor-core-gpu-datasheet) |
+| NVIDIA L4 | 30.3 | 121.0 | 242.0 | 300.0 | [L4 product page](https://www.nvidia.com/en-us/data-center/l4/) |
+| NVIDIA L40 | 90.5 | 181.0 | 362.0 | 864.0 | [L40 product page](https://www.nvidia.com/en-us/data-center/l40/) |
+| NVIDIA L40S | 91.6 | 366.0 | 733.0 | 864.0 | [L40S product page](https://www.nvidia.com/en-us/data-center/l40s/) |
+| NVIDIA T4 | 8.1 | 65.0 | 0.0 | 300.0 | [T4 datasheet](https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/tesla-t4/t4-tensor-core-datasheet-951643.pdf) |
+
+Assumptions:
+
+- Values assume the vendor boost clock and a well-cooled card. Laptop and
+  thermally limited SKUs run below these peaks.
+- MIG and vGPU instances expose different names (and a fraction of the
+  bandwidth/FLOPS). They will usually fall through to "unknown device" rather
+  than silently inheriting the full-card peak.
+- Power limits and memory clocks move real throughput well below the table, so
+  MFU/MBU are upper-bound-normalized ratios, not absolute efficiency.
+
+### Lookup and overrides
+
+`blt_device_lookup` picks the **longest** table name that is a substring of the
+reported device name. This is what keeps variants apart: `NVIDIA GeForce RTX
+4060 Ti` must not match the shorter `NVIDIA GeForce RTX 4060`, `NVIDIA H100
+PCIe` must not match `NVIDIA H100`, and `NVIDIA L40S` must not match `NVIDIA
+L4`.
+
+`blt_device_resolve(name, dtype, tflops_override, bw_override)` then resolves
+the effective peaks:
+
+1. A positive `--peak-tflops` / `--peak-bandwidth` always wins (even for an
+   unknown device).
+2. Otherwise the matched entry's dtype column (`fp32`, `bf16` or `fp8`,
+   selected from `--fp8` / `--bf16`) and its HBM bandwidth are used.
+3. Unknown device with no override → all-zero peaks; the trainer prints
+   `n/a` and disables MFU/MBU instead of reporting a misleading `0.0`.
+
+### MBU models
+
+MBU is a **lower bound**: both models count mandatory weight traffic plus a
+minimal I/O term, and ignore activations, allocator scratch and KV cache.
+
+- **Training** (`train_blt_d`): per optimizer step the weights are read on the
+  forward and backward passes and touched again by the update, gradients are
+  written then read, and AdamW additionally reads/writes its two moments. That
+  is `param_bytes * 6` for SGD and `param_bytes * 10` for AdamW, multiplied by
+  the number of steps. Elapsed time is the wall clock over the training loop.
+- **Inference** (`infer_bench`): per prompt,
+  `(model_weight_bytes + entropy_lm_weight_bytes) * (decoder_nfe + encoder_nfe)
+  + (prompt_len + new_bytes)`. Weights are counted once per forward pass; the
+  I/O term covers reading the prompt and writing the generated bytes.
+
+The trainer excludes the optimizer's own state allocation from `param_bytes`
+(it counts weights only) and both tools exclude KV-cache growth.
+
+### Adding a device
+
+1. Append an entry to `BLT_DEVICE_TABLE` in `csrc/core/device_info.c`, longest
+   distinctive name first is not required (lookup is longest-match), but keep
+   variants grouped.
+2. Add a row to the table above with the datasheet/product-page link.
+3. Add a lookup/resolve assertion in `tests/unit/core/unit_device_info.c`
+   covering any prefix ambiguity (e.g. a `Ti` or `PCIe` suffix).
