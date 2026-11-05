@@ -235,6 +235,13 @@ if(USE_CUDA)
   add_executable(cuda_bench bench/cuda_bench.c)
   target_include_directories(cuda_bench PRIVATE bench)
   target_link_libraries(cuda_bench PRIVATE blt_core bench_harness CUDA::cudart CUDA::cublas m)
+
+  # Host-compiled telemetry sources include <cuda_runtime.h>. Without the
+  # toolkit include path gcc falls back to the apt package under /usr/include,
+  # whose older header aliases cudaGetDeviceProperties to a _v2 symbol that the
+  # installed libcudart does not export.
+  target_include_directories(train_blt_d PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+  target_include_directories(infer_bench PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
 endif()
 
 # ============================================================================

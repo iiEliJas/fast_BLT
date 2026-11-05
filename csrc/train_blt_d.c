@@ -24,6 +24,10 @@
 #include <string.h>
 #include "core/platform.h"
 
+#ifdef BLT_WITH_CUDA
+#include <cuda_runtime.h>
+#endif
+
 #include "core/allocator.h"
 #include "core/backend.h"
 #include "models/model.h"
@@ -289,6 +293,20 @@ static size_t blt_count_params(const blt_model *model) {
     return n;
 }
 
+// Weight bytes (fp32 storage) used by the training MBU model. Optimizer state
+// is counted separately by the per-step multiplier, not here.
+static void param_bytes_fn(float *tensor, const blt_param_info *info, void *ctx) {
+    (void)tensor;
+    size_t *n = (size_t *)ctx;
+    *n += info->numel * sizeof(float);
+}
+
+static size_t blt_param_bytes(const blt_model *model) {
+    size_t n = 0;
+    blt_model_visit_params(model, NULL, param_bytes_fn, &n, 0);
+    return n;
+}
+
 static void refresh_bf16_weights(const blt_model *model) {
     blt_transformer_stack *st = &model->global->stack;
     if (!st->use_bf16 || !st->layer_weights_bf16) return;
@@ -361,16 +379,37 @@ int main(int argc, char **argv) {
         return 1;
     }
     const blt_backend dev = a.use_cuda ? BLT_BACKEND_CUDA : BLT_BACKEND_CPU;
-#ifdef USE_CUDA
-    if (a.use_cuda && a.peak_tflops <= 0.0f) {
-        cudaDeviceProp prop;
+    // Resolve reference peaks once at startup: explicit flags win, then the
+    // table entry for the running card, then the run's math dtype column.
+#ifdef BLT_WITH_CUDA
+    char device_name_buf[256] = {0};
+#endif
+    const char *device_name = NULL;
+    const double tflops_override = (double)a.peak_tflops;
+    const double bw_override = (double)a.peak_bandwidth;
+    const blt_peak_dtype peak_dtype = a.fp8 ? BLT_PEAK_FP8 : (a.bf16 ? BLT_PEAK_BF16 : BLT_PEAK_FP32);
+#ifdef BLT_WITH_CUDA
+    if (a.use_cuda) {
+        struct cudaDeviceProp prop;
         if (cudaGetDeviceProperties(&prop, 0) == cudaSuccess) {
-            const blt_device_spec *spec = blt_device_lookup(prop.name);
-            if (spec) a.peak_tflops = (float)spec->bf16_tflops; // default to bf16 peak
-            else fprintf(stderr, "warning: unknown CUDA device '%s'; MFU omitted\n", prop.name);
+            snprintf(device_name_buf, sizeof(device_name_buf), "%s", prop.name);
+            device_name = device_name_buf;
+        } else {
+            fprintf(stderr,
+                    "warning: cudaGetDeviceProperties failed; pass --peak-tflops/--peak-bandwidth to report MFU/MBU\n");
         }
     }
 #endif
+    blt_device_peaks peaks = blt_device_resolve(device_name, peak_dtype, tflops_override, bw_override);
+    a.peak_tflops = (float)peaks.tflops;
+    a.peak_bandwidth = (float)peaks.bandwidth_gbps;
+    if (device_name && peaks.spec == NULL) {
+        fprintf(stderr, "warning: unknown device '%s'; %s\n", device_name,
+                (peaks.tflops > 0.0 && peaks.bandwidth_gbps > 0.0)
+                    ? "using explicit --peak-tflops/--peak-bandwidth overrides"
+                    : "pass --peak-tflops/--peak-bandwidth to report MFU/MBU");
+    }
+    const char *const peak_dtype_name = a.fp8 ? "fp8" : (a.bf16 ? "bf16" : "fp32");
     g_blt_deterministic = a.deterministic;
 #ifdef BLT_WITH_CUDA
     if (a.use_cuda && a.cuda_scratch_mb > 0) blt_cuda_set_scratch_size(a.cuda_scratch_mb * 1024ULL * 1024);
@@ -632,6 +671,19 @@ int main(int argc, char **argv) {
            a.use_cuda ? "cuda" : "cpu", a.d0_learned ? "learned" : "zeros", a.optimizer ? "adamw" : "sgd", n_params,
            (double)n_params / 1e6);
 
+    // Telemetry: name the matched table entry and the source of each peak so a
+    // disabled MFU/MBU is never confused with a measured 0 TFLOP/s.
+    printf("[TRAIN] device=%s peak_tflops=", device_name ? device_name : "unknown");
+    if (peaks.tflops > 0.0) printf("%.2f (%s)", peaks.tflops, tflops_override > 0.0 ? "override" : peak_dtype_name);
+    else printf("n/a");
+    printf(" peak_bw=");
+    if (peaks.bandwidth_gbps > 0.0)
+        printf("%.1f GB/s (%s)", peaks.bandwidth_gbps, bw_override > 0.0 ? "override" : "hbm");
+    else printf("n/a");
+    if (peaks.tflops <= 0.0 || peaks.bandwidth_gbps <= 0.0)
+        printf(" (pass --peak-tflops/--peak-bandwidth for MFU/MBU)");
+    printf("\n");
+
     // Training loop: non-overlapping windows over the corpus, fixed-stride
     // patches, freshly sampled corruption per visit.
 
@@ -704,6 +756,8 @@ int main(int argc, char **argv) {
     const int timing = (getenv("BLT_TRAIN_TIMING") != NULL);
 
     double train_start = blt_time_sec();
+    double last_tflops = 0.0;
+    int have_last_tflops = 0;
     double last_t = train_start, excl_s = 0.0;
     blt_eta_state eta;
     blt_eta_init(&eta, a.start_step);
@@ -1042,6 +1096,10 @@ int main(int argc, char **argv) {
                    rem_h, rem_m);
             if (have_tflops) printf("  ~%.2f TFLOP/s", tflops);
             if (a.peak_tflops > 0 && have_tflops) printf("  MFU %.1f%%", 100.0 * tflops / a.peak_tflops);
+            if (have_tflops) {
+                last_tflops = tflops;
+                have_last_tflops = 1;
+            }
             printf("\n");
             fflush(stdout);
             running = 0.0;
@@ -1177,6 +1235,7 @@ int main(int argc, char **argv) {
 
     double bpb = -1.0;
     double final_masked_acc = 0.0;
+    size_t eval_count = 0, hits = 0, total = 0;
     if (a.eval_path != NULL) {
         FILE *ef = fopen(a.eval_path, "rb");
         if (!ef) {
@@ -1198,13 +1257,14 @@ int main(int argc, char **argv) {
             return 1;
         }
         size_t avail = (size_t)esz - a.eval_skip;
-        size_t eval_count = a.eval_windows;
+        eval_count = a.eval_windows;
         size_t max_windows = avail / a.window;
         if (eval_count > max_windows) eval_count = max_windows;
         uint8_t *base = eval_bytes + a.eval_skip;
 
         double ce_sum = 0.0;
-        size_t hits = 0, total = 0;
+        hits = 0;
+        total = 0;
         for (size_t wi = 0; wi < eval_count; wi++) {
             blt_arena_reset(scratch);
             const uint8_t *text = base + wi * a.window;
@@ -1228,7 +1288,7 @@ int main(int argc, char **argv) {
                                        a.d0_learned ? BLT_D0_LEARNED : BLT_D0_ZEROS, ep, eM, &hits, &total);
         }
         bpb = (ce_sum / (double)eval_count) / log(2.0);
-        double final_masked_acc = total ? (double)hits / (double)total : 0.0;
+        final_masked_acc = total ? (double)hits / (double)total : 0.0;
         if (a.save_best_path) {
             const double metric = (a.best_metric == 0) ? bpb : final_masked_acc;
             const int valid = (a.best_metric == 0) ? isfinite(bpb) : (total > 0);
@@ -1250,14 +1310,40 @@ int main(int argc, char **argv) {
                 fflush(stdout);
             }
         }
-        printf("RESULT mode=%s steps=%zu embed=%zu window=%zu B=%zu "
-               "enc/glob/dec=%zu/%zu/%zu xattn=%s backend=%s "
-               "eval_windows=%zu causal_bpb=%.4f masked_acc=%.3f (%zu/%zu) params=%zu\n",
-               a.diffusion ? "bltd" : "plain", a.steps, a.embed, a.window, a.block_size, a.enc_layers, a.glob_layers,
-               a.dec_layers, a.cross_last ? "last" : "all", a.use_cuda ? "cuda" : "cpu", eval_count, bpb,
-               total ? (double)hits / (double)total : 0.0, hits, total, n_params);
         free(eval_bytes);
     }
+
+    // Training MBU model: per optimizer step the weights are read by the
+    // forward and backward passes and touched again by the update; gradients
+    // are written then read; AdamW additionally reads and writes its two
+    // moments. That is 6x weight bytes for SGD and 10x for AdamW. Activations
+    // (the dominant traffic at long windows) are excluded, so MBU is a lower
+    // bound on the bytes the hardware actually moves.
+    const size_t param_bytes = blt_param_bytes(model);
+    const double per_step_weight_mult = (a.optimizer == 1) ? 10.0 : 6.0;
+    const double train_elapsed = blt_time_sec() - train_start;
+    const double bytes_moved_gb = (double)param_bytes * per_step_weight_mult * (double)(end_step - a.start_step) / 1e9;
+    char mfu_buf[32];
+    char mbu_buf[32];
+    if (a.peak_tflops > 0.0f && have_last_tflops) {
+        snprintf(mfu_buf, sizeof(mfu_buf), "%.2f%%", 100.0 * last_tflops / (double)a.peak_tflops);
+    } else {
+        snprintf(mfu_buf, sizeof(mfu_buf), "n/a");
+    }
+    if (a.peak_bandwidth > 0.0f && train_elapsed > 0.0 && param_bytes > 0) {
+        snprintf(mbu_buf, sizeof(mbu_buf), "%.2f%%",
+                 100.0 * blt_mbu(bytes_moved_gb, train_elapsed, (double)a.peak_bandwidth));
+    } else {
+        snprintf(mbu_buf, sizeof(mbu_buf), "n/a");
+    }
+    printf("RESULT mode=%s steps=%zu embed=%zu window=%zu B=%zu "
+           "enc/glob/dec=%zu/%zu/%zu xattn=%s backend=%s "
+           "eval_windows=%zu causal_bpb=%.4f masked_acc=%.3f (%zu/%zu) params=%zu "
+           "device=%s peak_tflops=%.2f mfu=%s mbu=%s\n",
+           a.diffusion ? "bltd" : "plain", a.steps, a.embed, a.window, a.block_size, a.enc_layers, a.glob_layers,
+           a.dec_layers, a.cross_last ? "last" : "all", a.use_cuda ? "cuda" : "cpu", eval_count, bpb,
+           total ? (double)hits / (double)total : 0.0, hits, total, n_params, device_name ? device_name : "unknown",
+           (double)a.peak_tflops, mfu_buf, mbu_buf);
 
     if (metrics_fp) {
         const size_t n_params = blt_count_params(model);

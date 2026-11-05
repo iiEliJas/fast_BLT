@@ -203,7 +203,8 @@ SGD uses vanilla gradient descent with global-norm clip at 5.0. AdamW uses the s
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--peak-tflops F` | 0 | Peak TFLOP/s for MFU reporting (0 disables) |
+| `--peak-tflops F` | 0 | Peak TFLOP/s for MFU. Overrides the device table; 0 = look up the running device |
+| `--peak-bandwidth F` | 0 | Peak HBM bandwidth in GB/s for MBU. Overrides the device table; 0 = look up the running device |
 
 ### Checkpointing
 
@@ -557,6 +558,9 @@ Exit codes: 0 on success, 1 on error.
 | `--dv-gate F` | 0.90 | Min agreement for verified methods (0 = disable) |
 | `--fixed-patches` | off | Fixed-stride-4 patching (vs entropy) |
 | `--entropy-lm FILE` | off | Trained entropy LM for patching |
+| `--peak-tflops F` | 0 | Peak TFLOP/s override (device table fallback) |
+| `--peak-bandwidth F` | 0 | Peak HBM GB/s override; enables the MBU column/results field |
+| `--device NAME` | (auto) | Device table name to use; lets CPU runs reproduce a GPU entry for MBU |
 | `--results FILE` | bench/results.jsonl | Output results file |
 
 ---
