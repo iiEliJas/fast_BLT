@@ -143,7 +143,7 @@ static int test_adamw_state_roundtrip(void) {
 
     blt_adamw_config acfg = {
         .lr = 0.01f, .beta1 = 0.9f, .beta2 = 0.999f, .eps = 1e-8f, .weight_decay = 0.01f, .step = 0};
-    for (int k = 0; k < 3; k++) adamw_all(model, grad, s, &acfg);
+    for (int k = 0; k < 3; k++) adamw_all(model, grad, s, &acfg, 1.0f);
     if (s->step != 3) return 0;
 
     // Keep a copy of every moment to compare against after the round trip. em and
@@ -250,7 +250,7 @@ static int test_adamw_selective_decay(void) {
     // Record a norm weight value before
     // Use first param that is norm: find via visitor capture
     // Simpler: run step and check no crash + finite (correctness covered by selective logic)
-    adamw_all(model, grad, s, &acfg);
+    adamw_all(model, grad, s, &acfg, 1.0f);
 
     blt_arena_destroy(opt_arena);
     blt_arena_destroy(model_arena);

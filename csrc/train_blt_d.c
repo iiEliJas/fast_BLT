@@ -497,12 +497,14 @@ int main(int argc, char **argv) {
         }
     }
 
-    blt_model_grad *grad = blt_model_grad_create(model_arena, model);
     if (a.grad_accum < 1) {
         fprintf(stderr, "--grad-accum must be >= 1\n");
         return 1;
     }
-    blt_model_grad *grad_accum = blt_model_grad_create(model_arena, model);
+    blt_model_grad *grad = blt_model_grad_create(model_arena, model);
+    // The accumulation buffer doubles gradient memory; only the multi-micro
+    // path needs it.
+    blt_model_grad *grad_accum = (a.grad_accum > 1) ? blt_model_grad_create(model_arena, model) : NULL;
     blt_entropy_lm *train_lm = a.entropy_patches ? blt_make_entropy_lm(host_lm_arena, MS, NULL, 11) : NULL;
     if (train_lm && a.entropy_lm) {
         blt_entropy_lm_load(train_lm, a.entropy_lm);
@@ -828,7 +830,7 @@ int main(int argc, char **argv) {
             }
 
             size_t bshape[1] = {N};
-            blt_tensor bytes_in = blt_tensor_create(scratch, bshape, 1, BLT_DTYPE_UINT8);
+            blt_tensor bytes_in = blt_tensor_create_uninit(scratch, bshape, 1, BLT_DTYPE_UINT8);
             blt_tensor_upload(&bytes_in, text, N);
 
             // Targets for L_clean: window+1 bytes so the last row has a prediction target
@@ -940,7 +942,8 @@ int main(int argc, char **argv) {
         if (timing) tsC = blt_time_sec();
         if (cnorm_fp && ((step + 1) % a.report_every == 0 || step + 1 == end_step))
             log_component_norms(cnorm_fp, step + 1, model, grad);
-        float pre_clip_norm = clip_all(model, grad, a.max_norm);
+        float clip_scale = 1.0f;
+        float pre_clip_norm = blt_grad_clip_norm(model, grad, a.max_norm, &clip_scale);
         if (gnorm_fp && ((step + 1) % a.report_every == 0 || step + 1 == end_step))
             fprintf(gnorm_fp, "%zu %.6f\n", step + 1, pre_clip_norm);
         if (unorm_fp && pre_clip_norm > 100.0f) {
@@ -954,7 +957,7 @@ int main(int argc, char **argv) {
                                          .weight_decay = a.weight_decay,
                                          .weight_decay_norms = a.weight_decay_norms,
                                          .step = 0};
-                u_norm = adamw_update_norm(model, grad, aw, &ucfg);
+                u_norm = adamw_update_norm(model, grad, aw, &ucfg, clip_scale);
             } else {
                 u_norm = lr * post_clip;
             }
@@ -969,9 +972,9 @@ int main(int argc, char **argv) {
                                     .weight_decay = a.weight_decay,
                                     .weight_decay_norms = a.weight_decay_norms,
                                     .step = 0};
-            adamw_all(model, grad, aw, &cfg);
+            adamw_all(model, grad, aw, &cfg, clip_scale);
         } else {
-            sgd_all(model, grad, lr);
+            sgd_all(model, grad, lr, clip_scale);
         }
         if (metrics_fp) {
             fprintf(metrics_fp, "{\"event\":\"train\",\"step\":%zu,\"loss\":%.6f,\"lr\":%.6g,\"grad_norm\":%.6f}\n",

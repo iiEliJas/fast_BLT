@@ -5,6 +5,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+- Gradient clipping read uninitialized device memory when a model had more than 64 parameter
+  tensors; the norm buffer is now sized up front and the clip factor is folded into the optimizer
+  update. The old CUDA path dropped 64 of the 67 contributions, so the norm and clip factor
+  were wrong; CUDA now matches the CPU norm.
+
 ### Added
 
 ## [1.0.1] - 2026-10-25
