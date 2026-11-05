@@ -51,8 +51,9 @@ Net: ~23% faster (26.2 -> 20.2), loss unchanged (556.8496).
 
 ## Remaining (item 26)
 
-- 26.4 (fold clip scale into optimizer): low value; clip scale only runs when
-  grad norm exceeds max_norm, rare in practice.
+- ~~26.4 (fold clip scale into optimizer)~~ — done. The earlier "rare in
+  practice" estimate was wrong: the true grad norm is ~100-240 at this config,
+  so clipping runs every step. See the clip-norm section below.
 - 26.6 (fuse elementwise chains): moderate effort; would reduce the ~197
   `blt_add_kernel` launches per step.
 - 26.7 (CUDA graph capture): highest potential win, but the step mixes host-side
@@ -133,6 +134,34 @@ prerequisite #1 for CUDA graph capture and removes host stalls.
 | After  (async H2D) | 45.1 | 12.9 | 28.8 | 2.2 |
 
 Net: ~3.6% faster. CPU ground truth parity maintained (80/80 tests pass).
+
+## Clip-norm buffer fix and optimizer scale fold (fix/item-26-clip-norm)
+
+`clip_all` grew its device accumulation buffer with `cudaFree` + `cudaMalloc`
+at the 65th parameter tensor. The default model has 67, so the first 64 squared
+per-tensor sums were freed and the replacement allocation was summed while
+uninitialized. With 64 of the 67 contributions dropped, the CUDA norm and clip
+factor were wrong (the true norm on this config is ~100-240). The earlier
+"batched gradient-norm download" row above was measured while this was broken.
+
+`blt_grad_clip_norm` now counts the gradient tensors with a first visitor pass,
+allocates the exact-size device array, launches all per-tensor dots into it,
+and does one D2H. The buffer cannot be reallocated mid-visit. The clip factor
+is returned as `scale_out` and folded into `sgd_all`/`adamw_all` (and
+`adamw_update_norm`) instead of running a separate scaling pass; the multiply
+order is unchanged, so the folded path is bit-identical to pre-scaling.
+
+| Config | ms/step | fwd | bwd | opt |
+|---|---:|---:|---:|---:|
+| default `--max-norm 5.0` | 15.5 | 4.2 | 9.9 | 1.0 |
+| forced clip `--max-norm 0.5` | 16.5 | 4.2 | 10.3 | 1.5 |
+
+Steady state, RTX 4060, 150 steps after warmup. CPU and CUDA now report the
+same per-step gradient norm (231.5 vs 236.4 at step 1; the difference is
+matmul and summation rounding). Regression coverage lives in
+`tests/unit/tools/unit_train_diag.c` (exact norm, bit-identical fold for SGD
+and AdamW, `grad_accum == 1` identity) and
+`tests/parity/parity_clip_norm.c` (CPU/CUDA, >64 tensors, no-clip case).
 
 ## CUDA graph capture status
 

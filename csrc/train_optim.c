@@ -8,21 +8,25 @@
 
 struct sgd_ctx {
     float lr;
+    float scale;
 };
 
 static void sgd_pair_fn(float *w, float *g, const blt_param_info *info, void *ctx) {
-    float lr = ((struct sgd_ctx *)ctx)->lr;
+    const struct sgd_ctx *c = (const struct sgd_ctx *)ctx;
     if (info->backend == BLT_BACKEND_CUDA) {
 #ifdef BLT_WITH_CUDA
-        blt_cuda_sgd_step(w, (const float *)g, lr, info->numel);
+        blt_cuda_sgd_step(w, (const float *)g, c->lr, c->scale, info->numel);
 #endif
     } else {
-        for (size_t i = 0; i < info->numel; i++) w[i] -= lr * g[i];
+        for (size_t i = 0; i < info->numel; i++) {
+            const float gi = g[i] * c->scale;
+            w[i] -= c->lr * gi;
+        }
     }
 }
 
-void sgd_all(blt_model *m, blt_model_grad *g, float lr) {
-    struct sgd_ctx ctx = {lr};
+void sgd_all(blt_model *m, blt_model_grad *g, float lr, float grad_scale) {
+    struct sgd_ctx ctx = {lr, grad_scale};
     blt_model_visit_param_pairs(m, g, sgd_pair_fn, &ctx);
 }
 
@@ -94,6 +98,7 @@ adamw_state *adamw_state_create(blt_arena *arena, blt_model *m) {
 struct adamw_pair_ctx {
     adamw_state *s;
     blt_adamw_config cfg;
+    float scale;
 };
 
 static void adamw_pair_fn(float *w, float *g, const blt_param_info *info, void *ctx) {
@@ -109,14 +114,15 @@ static void adamw_pair_fn(float *w, float *g, const blt_param_info *info, void *
     if (info->backend == BLT_BACKEND_CUDA) {
 #ifdef BLT_WITH_CUDA
         blt_cuda_adamw_step(w, (const float *)g, (float *)p->em.data, (float *)p->esq.data, lr, b1, b2, eps, wd, bc1,
-                            bc2, info->numel);
+                            bc2, c->scale, info->numel);
 #endif
     } else {
         float *m = (float *)p->em.data;
         float *v = (float *)p->esq.data;
         for (size_t i = 0; i < info->numel; i++) {
-            m[i] = b1 * m[i] + (1.0f - b1) * g[i];
-            v[i] = b2 * v[i] + (1.0f - b2) * g[i] * g[i];
+            const float gi = g[i] * c->scale;
+            m[i] = b1 * m[i] + (1.0f - b1) * gi;
+            v[i] = b2 * v[i] + (1.0f - b2) * gi * gi;
             const float mhat = m[i] / bc1;
             const float vhat = v[i] / bc2;
             w[i] -= lr * (mhat / (sqrtf(vhat) + eps) + wd * w[i]);
@@ -124,9 +130,9 @@ static void adamw_pair_fn(float *w, float *g, const blt_param_info *info, void *
     }
 }
 
-void adamw_all(blt_model *m, blt_model_grad *g, adamw_state *s, const blt_adamw_config *cfg) {
+void adamw_all(blt_model *m, blt_model_grad *g, adamw_state *s, const blt_adamw_config *cfg, float grad_scale) {
     s->step++;
-    struct adamw_pair_ctx ctx = {.s = s, .cfg = *cfg};
+    struct adamw_pair_ctx ctx = {.s = s, .cfg = *cfg, .scale = grad_scale};
     ctx.cfg.step = s->step;
     blt_model_visit_param_pairs(m, g, adamw_pair_fn, &ctx);
 }
@@ -136,6 +142,7 @@ struct adamw_unorm_ctx {
     float b1, b2, ep, wd;
     int weight_decay_norms;
     size_t step;
+    float scale;
     float sq;
 };
 
@@ -147,25 +154,28 @@ static void adamw_unorm_fn(float *w, float *g, const blt_param_info *info, void 
     const float bc2 = 1.0f - powf(c->b2, (float)c->step);
     if (info->backend == BLT_BACKEND_CUDA) {
 #ifdef BLT_WITH_CUDA
-        c->sq += blt_cuda_adamw_sqnorm((const float *)w, (const float *)g, (const float *)p->em.data,
-                                       (const float *)p->esq.data, c->b1, c->b2, c->ep, wd, bc1, bc2, info->numel);
+        c->sq +=
+            blt_cuda_adamw_sqnorm((const float *)w, (const float *)g, (const float *)p->em.data,
+                                  (const float *)p->esq.data, c->b1, c->b2, c->ep, wd, bc1, bc2, c->scale, info->numel);
 #endif
     } else {
         float *m = (float *)p->em.data;
         float *v = (float *)p->esq.data;
         for (size_t i = 0; i < info->numel; i++) {
-            float m_new = c->b1 * m[i] + (1.0f - c->b1) * g[i];
-            float v_new = c->b2 * v[i] + (1.0f - c->b2) * g[i] * g[i];
+            const float gi = g[i] * c->scale;
+            float m_new = c->b1 * m[i] + (1.0f - c->b1) * gi;
+            float v_new = c->b2 * v[i] + (1.0f - c->b2) * gi * gi;
             float m_hat = m_new / bc1;
             float v_hat = v_new / bc2;
-            float wd = (c->weight_decay_norms || info->decay) ? c->wd : 0.0f;
-            float u = m_hat / (sqrtf(v_hat) + c->ep) + wd * w[i];
+            float wd_i = (c->weight_decay_norms || info->decay) ? c->wd : 0.0f;
+            float u = m_hat / (sqrtf(v_hat) + c->ep) + wd_i * w[i];
             c->sq += u * u;
         }
     }
 }
 
-float adamw_update_norm(blt_model *m, blt_model_grad *g, adamw_state *s, const blt_adamw_config *cfg) {
+float adamw_update_norm(blt_model *m, blt_model_grad *g, adamw_state *s, const blt_adamw_config *cfg,
+                        float grad_scale) {
     struct adamw_unorm_ctx ctx = {
         .s = s,
         .b1 = cfg->beta1,
@@ -174,6 +184,7 @@ float adamw_update_norm(blt_model *m, blt_model_grad *g, adamw_state *s, const b
         .wd = cfg->weight_decay,
         .weight_decay_norms = cfg->weight_decay_norms,
         .step = s->step + 1,
+        .scale = grad_scale,
         .sq = 0.0f,
     };
     blt_model_visit_param_pairs(m, g, adamw_unorm_fn, &ctx);

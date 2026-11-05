@@ -42,18 +42,19 @@ void blt_fill_constant(blt_backend backend, float *data, size_t n, float v);
 // Element-wise scale: data[i] *= s for i in [0, n). CUDA-aware.
 void blt_cuda_vec_scale(float *data, float s, size_t n);
 
-// In-place SGD: w[i] -= lr * g[i] for i in [0, n). Device pointers.
-void blt_cuda_sgd_step(float *w, const float *g, float lr, size_t n);
+// In-place SGD: w[i] -= lr * (g[i] * grad_scale) for i in [0, n). Device pointers.
+void blt_cuda_sgd_step(float *w, const float *g, float lr, float grad_scale, size_t n);
 
 // In-place AdamW step on device pointers. Computes bias-corrected
-// AdamW update for each element: w, m, v are all device pointers.
+// AdamW update for each element using g[i] * grad_scale: w, m, v are all
+// device pointers.
 void blt_cuda_adamw_step(float *w, const float *g, float *m, float *v, float lr, float b1, float b2, float eps,
-                         float wd, float bc1, float bc2, size_t n);
+                         float wd, float bc1, float bc2, float grad_scale, size_t n);
 
-// Reduction: returns sum of squared AdamW updates over [0, n).
-// All pointers are device pointers.
+// Reduction: returns sum of squared AdamW updates over [0, n), computed from
+// g[i] * grad_scale. All pointers are device pointers.
 float blt_cuda_adamw_sqnorm(const float *w, const float *g, const float *m, const float *v, float b1, float b2,
-                            float eps, float wd, float bc1, float bc2, size_t n);
+                            float eps, float wd, float bc1, float bc2, float grad_scale, size_t n);
 
 #ifdef __cplusplus
 }

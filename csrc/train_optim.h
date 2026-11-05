@@ -14,8 +14,10 @@ extern "C" {
 #define BLT_MAX_PARAMS 4096
 #endif
 
-// SGD: w -= lr * g for every parameter
-void sgd_all(blt_model *m, blt_model_grad *g, float lr);
+// SGD: w -= lr * (g * grad_scale) for every parameter. Folding the clip scale
+// into the update removes a separate per-tensor gradient pass and is
+// bit-identical to pre-scaling the gradient (same multiply order).
+void sgd_all(blt_model *m, blt_model_grad *g, float lr, float grad_scale);
 
 // AdamW state: one exp_avg + one exp_avg_sq per parameter, flat array indexed by param idx
 typedef struct {
@@ -32,11 +34,12 @@ typedef struct {
 // Create adamw_state with flat pairs for every model parameter
 adamw_state *adamw_state_create(blt_arena *arena, blt_model *m);
 
-// AdamW update step: w -= lr * bias_corrected_adamw(w, g, m, v, ...)
-void adamw_all(blt_model *m, blt_model_grad *g, adamw_state *s, const blt_adamw_config *cfg);
+// AdamW update step: w -= lr * bias_corrected_adamw(w, g * grad_scale, m, v, ...)
+void adamw_all(blt_model *m, blt_model_grad *g, adamw_state *s, const blt_adamw_config *cfg, float grad_scale);
 
-// Compute ||update|| across all parameters (for gradient clipping diagnostics)
-float adamw_update_norm(blt_model *m, blt_model_grad *g, adamw_state *s, const blt_adamw_config *cfg);
+// Compute ||update|| across all parameters (for gradient clipping diagnostics),
+// using the same grad_scale the optimizer update will apply.
+float adamw_update_norm(blt_model *m, blt_model_grad *g, adamw_state *s, const blt_adamw_config *cfg, float grad_scale);
 
 // Write exp_avg, exp_avg_sq and the bias-correction step counter, plus the
 // training step the snapshot was taken at. Fatal on any IO or shape mismatch.

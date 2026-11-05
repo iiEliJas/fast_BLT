@@ -320,6 +320,45 @@ Training speedup scales with model size (30x → 76x from E=64 to E=192) because
 | bf16/fp32 ratio at 1024 | 2.8x | |
 | bf16/fp32 ratio at 2048 | 3.1x | |
 
+### Training-step and gradient-clipping overhead
+
+The research config (`W=64`, `E=64`, `H=128`, 2/2/2 layers, AdamW) went from
+26.2 ms/step to 15.5-16.1 ms/step on the RTX 4060. The optimizer block is no
+longer dominated by gradient bookkeeping:
+
+| Stage | Before (E009) | Current |
+|---|---:|---:|
+| forward | ~4.8-7.8 ms | 4.0-4.3 ms |
+| backward | 12.9 ms | 9.9-10.3 ms |
+| optimizer + clipping | 4.9 ms | 1.0-1.1 ms |
+| **step** | **26.2 ms** | **15.5-16.1 ms** |
+
+Steady-state numbers from 150-step runs after warmup:
+
+```bash
+BLT_TRAIN_TIMING=1 ./build-cuda/train_blt_d \
+  --corpus data/train.bin --backend cuda --steps 150 \
+  --window 64 --embed 64 --hidden 128 --layers 2 --report-every 1000
+```
+
+What changed:
+
+- `blt_cuda_memset` is asynchronous on the default stream.
+- `--grad-accum 1` skips the accumulator zero/add/copy/scale entirely, and the
+  second gradient buffer is only allocated when accumulation is enabled.
+- Gradient clipping computes every per-tensor dot into one device array and
+  downloads it once. The array is sized from a counting pass over the parameter
+  visitor before any dots launch. The old grow-on-demand path reallocated at
+  the 65th parameter tensor (the default model has 67), freed the array holding
+  the first 64 sums, and then summed the uninitialized replacement. With 64 of
+  the 67 squared contributions dropped, the reported norm and clip factor were
+  wrong. After the fix the CUDA norm matches the CPU ground truth: both
+  backends report per-step norms in the 100-240 range on this config.
+- The clip factor is folded into `sgd_all`/`adamw_all` instead of running a
+  separate per-tensor scale pass. Forcing clipping with `--max-norm 0.5`
+  raises the optimizer block to about 1.5-1.6 ms/step; without the fold that
+  threshold also paid a full extra parameter pass.
+
 ## Device table and MFU/MBU
 
 Peak FLOPS and HBM bandwidth come from `csrc/core/device_info.c`. The trainer

@@ -14,8 +14,11 @@ extern "C" {
 #include "models/param_visitor.h"
 #include "models/patcher.h"
 
-// Gradient clipping: clip all gradients to max_norm and return the pre-clip norm.
-float clip_all(blt_model *m, blt_model_grad *g, float max_norm);
+// Compute the global L2 gradient norm in visitor order without modifying the
+// gradients. When the norm exceeds max_norm, *scale_out receives
+// max_norm / norm so the optimizer can fold the scale into its update; it is
+// 1.0 otherwise. scale_out may be NULL when only the norm is needed.
+float blt_grad_clip_norm(const blt_model *m, blt_model_grad *g, float max_norm, float *scale_out);
 
 // Log per-component L2 gradient norms to the component-norm-log file.
 void log_component_norms(FILE *fp, size_t step, blt_model *m, blt_model_grad *g);

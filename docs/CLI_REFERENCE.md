@@ -183,7 +183,9 @@ order and the diffusion timestep sequence.
 | `--weight-decay F` | 0.01 | AdamW decoupled L2 weight decay |
 | `--weight-decay-norms` | off | Also apply weight decay to RMSNorm weights (legacy; default is selective) |
 
-SGD uses vanilla gradient descent with global-norm clip at 5.0. AdamW uses the standard PyTorch-compatible algorithm (bias-corrected m/v).
+SGD uses vanilla gradient descent. AdamW uses the standard PyTorch-compatible algorithm
+(bias-corrected m/v). Both clip to `--max-norm`: the global norm is computed once per step, then
+the clip factor is applied inside the optimizer kernel rather than as a separate gradient pass.
 
 ### Mode Selection
 

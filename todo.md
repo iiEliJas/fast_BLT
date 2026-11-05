@@ -1948,7 +1948,7 @@ multi-GPU item currently covers data parallelism only.
 
 ## 26. Backward-pass and launch-overhead optimization
 
-- **Status:** Open
+- **Status:** In progress — clip-norm bug fixed, clip scale folded into the optimizer, accumulator only allocated for `grad_accum > 1`; elementwise fusion and CUDA graph capture remain.
 - **Area:** Training (CUDA)
 - **Depends on:** 1 (gradient accumulation)
 
@@ -1982,21 +1982,28 @@ work, not compute.
 
 ### Implementation
 
-1. Async memset: change `blt_cuda_memset` to `cudaMemsetAsync` on the default
-   stream. Order is preserved because all kernels use the default stream.
-2. Skip redundant zero passes when `grad_accum == 1`: backward directly into
-   `grad`, drop the accumulator zero/add/scale.
-3. Device-side grad norm: add `blt_vec_dot_into` that writes to a device
-   pointer without D2H; `clip_all` launches all dots into a device array and
-   does one D2H, preserving deterministic summation order.
-4. Fold clip scale into the optimizer: pass a `grad_scale` to `adamw_all`/
-   `sgd_all` and scale the gradient inside the kernel, dropping the separate
-   scale pass.
-5. Add `blt_tensor_create_uninit` for tensors fully overwritten by their
-   producing kernel; use it at forward/backward allocation sites.
-6. Reduce elementwise launch count in backward: fuse consecutive add/scale/
+1. [x] Async memset: change `blt_cuda_memset` to `cudaMemsetAsync` on the
+   default stream. Order is preserved because all kernels use the default
+   stream.
+2. [x] Skip redundant zero passes when `grad_accum == 1`: backward directly into
+   `grad`, drop the accumulator zero/add/scale. The accumulator is only
+   allocated when `grad_accum > 1`.
+3. [x] Device-side grad norm: add `blt_vec_dot_into` that writes to a device
+   pointer without D2H; `blt_grad_clip_norm` counts the parameter tensors
+   first, allocates the exact-sized device array, launches all dots into it,
+   and does one D2H, preserving deterministic summation order. The previous
+   grow-on-demand buffer discarded the first 64 sums when the model had more
+   than 64 parameter tensors (the default has 67).
+4. [x] Fold clip scale into the optimizer: `adamw_all`/`sgd_all` take a
+   `grad_scale` and apply it inside the update kernel, dropping the separate
+   per-tensor scale pass. `adamw_update_norm` uses the same scale.
+5. [x] Add `blt_tensor_create_uninit` for tensors fully overwritten by their
+   producing kernel. Used at the upload sites in `train_blt_d.c`; the
+   forward/backward matmul scratch tensors were left zero-initialized because
+   their overwrite guarantees need checking per op.
+6. [ ] Reduce elementwise launch count in backward: fuse consecutive add/scale/
    copy chains where the producing kernel can write the final result.
-7. CUDA graph capture for the whole train step. Attempted; blocked by sync
+7. [ ] CUDA graph capture for the whole train step. Attempted; blocked by sync
    cudaMemcpy/cudaMemset during capture, host-side scratch arena state, and
    per-step inputs (t, positions, tokens) being read on host. Requires
    device-resident inputs and async copies throughout. Deferred to a dedicated
