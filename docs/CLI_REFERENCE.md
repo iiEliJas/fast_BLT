@@ -155,9 +155,44 @@ works with a prompt of any length up to the sequence bound, which is derived fro
 | `--seed S` | 7 | RNG seed |
 | `--report-every K` | 25 | Print frequency |
 | `--deterministic` | off | Deterministic training (slower, no cuda atomics) |
-| `--bf16` | off | BF16 mixed precision (CUDA only) |
+| `--dtype fp32\|bf16` | fp32 | Matmul math dtype. `bf16` keeps FP32 masters and casts matmul operands (CUDA only) |
+| `--bf16` | off | Alias for `--dtype bf16` |
 | `--fp8` | off | FP8 (E4M3) mixed precision (CUDA only) |
 | `--flash-attn` | off | LSE-based flash attention (CUDA only, experimental) |
+
+### Mixed precision (BF16)
+
+`--dtype bf16` (or the `--bf16` alias) keeps parameters, gradients, optimizer state,
+normalization, softmax, and cross-entropy in FP32. The local encoder, global transformer, and
+local decoder each hold a BF16 shadow copy of their matmul weights (QKV, attention projection,
+FFN up/gate/down, and the four cross-attention projections). The forward pass multiplies FP32
+activations by the BF16 weights, and the input-gradient GEMM of the backward pass uses the same
+BF16 weights. The CUDA backend casts the FP32 activation or gradient operand to BF16 in a
+scratch buffer and issues a BF16 tensor-core GEMM with FP32 accumulation. Weight gradients,
+optimizer updates, and checkpoints stay FP32, so the update path is numerically FP32.
+
+The shadows are rebuilt from the FP32 masters:
+
+- once after model creation or `--load-weights`, before the first forward (this covers
+  `--steps 0` evaluation),
+- after every optimizer step, before periodic evaluation and `blt_monitor`.
+
+Checkpoints therefore serialize FP32 masters only and load into both FP32 and BF16 models. A
+BF16 run and an FP32 run started from the same weights and data produce slightly different
+losses because the matmul operands are rounded; the difference is expected to stay small and
+must not produce NaN/Inf. The trainer prints `dtype=` in the startup line and `RESULT`, and the
+metrics JSON records the same value.
+
+BF16 is CUDA-only: the CPU matmul path only emulates the cast with FP32 temporaries, so
+`--dtype bf16 --backend cpu` exits with an error. The shadow copies add roughly half of the
+matmul-weight bytes to model memory; raise `--model-mb` if a configuration previously fit
+exactly. Increase `--cuda-scratch-mb` only if the BF16 cast scratch (one activation- or
+gradient-sized buffer per mixed matmul) runs out at long windows.
+
+Raw BF16 GEMM throughput is 2.2-3.2x FP32 on an RTX 4060, but end-to-end step time improves
+much less (2-4% on the configurations in `docs/BENCHMARKS.md`): at these model sizes the step
+is dominated by kernel launches, elementwise work, and the FP32 weight-gradient GEMM rather
+than the mixed GEMMs. Measure your own shape before assuming a 2x speedup.
 
 ### Window Order
 

@@ -359,6 +359,45 @@ What changed:
   raises the optimizer block to about 1.5-1.6 ms/step; without the fold that
   threshold also paid a full extra parameter pass.
 
+### BF16 mixed precision (`--dtype bf16`)
+
+Measured on the same desktop RTX 4060, driver 616.56, CUDA 12.0. `--dtype bf16` keeps FP32
+masters and casts only the matmul operand; see `docs/CLI_REFERENCE.md` for the exact scope.
+
+Raw `blt_matmul` throughput (`cuda_bench --backend cuda --iters 20`, square GEMMs, FP32
+accumulation for BF16):
+
+| shape | FP32 TFLOP/s | BF16 TFLOP/s | speedup |
+|-------|-------------:|-------------:|--------:|
+| 512 x 512 | 5.12 | 11.48 | 2.24x |
+| 1024 x 1024 | 7.06 | 19.15 | 2.71x |
+| 2048 x 2048 | 7.05 | 22.44 | 3.18x |
+
+End-to-end trainer (`BLT_TRAIN_TIMING=1`, steady-state average after 50 warmup steps):
+
+| config | FP32 step | BF16 step | delta |
+|--------|----------:|----------:|------:|
+| E=512, H=1024, enc/glob/dec 2/6/2, W=512 | 238.0 ms | 234.4 ms | -1.5% |
+| E=1024, H=2048, enc/glob/dec 1/2/1, W=512 | 244.7 ms | 235.2 ms | -3.9% |
+
+Commands:
+
+```bash
+BLT_TRAIN_TIMING=1 ./build-cuda/train_blt_d \
+  --corpus data/tinystories/train.bin --backend cuda --steps 150 \
+  --window 512 --embed 1024 --hidden 2048 \
+  --enc-layers 1 --glob-layers 2 --dec-layers 1 \
+  --scratch-mb 1024 --dtype bf16
+```
+
+The forward and input-gradient GEMMs use BF16 tensor cores; the weight-gradient GEMM and the
+optimizer stay FP32. At these model sizes the step is launch- and elementwise-bound (1-7% MFU),
+so raw GEMM throughput does not translate into a proportional step-time win. The CPU backend
+rejects `--dtype bf16`.
+
+Loss parity over 300 steps (same seed and window order, E=64/H=128/2 layers, `data/train.bin`):
+the FP32 and BF16 loss curves tracked each other within 0.1 and neither produced NaN/Inf.
+
 ## Device table and MFU/MBU
 
 Peak FLOPS and HBM bandwidth come from `csrc/core/device_info.c`. The trainer
