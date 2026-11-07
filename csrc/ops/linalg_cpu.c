@@ -62,9 +62,34 @@ void blt_matmul_cpu(const blt_tensor *a, const blt_tensor *b, blt_tensor *out) {
 void blt_matmul_backward_cpu(const blt_tensor *a, const blt_tensor *b, const blt_tensor *grad_out, blt_tensor *grad_a,
                              blt_tensor *grad_b) {
     BLT_REQUIRE(a != NULL && b != NULL && grad_out != NULL, "blt_matmul_backward: a, b, grad_out must not be NULL");
-    BLT_REQUIRE(a->dtype == BLT_DTYPE_FP32 && b->dtype == BLT_DTYPE_FP32 && grad_out->dtype == BLT_DTYPE_FP32,
-                "blt_matmul_backward: a, b, grad_out must be FP32");
     BLT_REQUIRE(a->ndim == 2 && b->ndim == 2 && grad_out->ndim == 2, "blt_matmul_backward: a, b, grad_out must be 2D");
+    BLT_REQUIRE(grad_out->dtype == BLT_DTYPE_FP32, "blt_matmul_backward: grad_out must be FP32");
+    BLT_REQUIRE((a->dtype == BLT_DTYPE_FP32 || a->dtype == BLT_DTYPE_BF16) &&
+                    (b->dtype == BLT_DTYPE_FP32 || b->dtype == BLT_DTYPE_BF16),
+                "blt_matmul_backward: a and b must be FP32 or BF16");
+
+    // BF16 weight operands are rounded to FP32 scratch, matching the values the
+    // forward pass multiplied by. This is the CPU ground truth for the CUDA
+    // tensor-core path, not a speed path.
+    if (a->dtype != BLT_DTYPE_FP32 || b->dtype != BLT_DTYPE_FP32) {
+        float *a_buf = (float *)malloc(a->numel * sizeof(float));
+        float *b_buf = (float *)malloc(b->numel * sizeof(float));
+        BLT_REQUIRE(a_buf != NULL && b_buf != NULL, "blt_matmul_backward: failed to allocate BF16 staging buffers");
+
+        blt_tensor a_tmp = {0}, b_tmp = {0};
+        blt_tensor_view_2d(&a_tmp, a_buf, a->shape[0], a->shape[1], BLT_BACKEND_CPU);
+        a_tmp.dtype = BLT_DTYPE_FP32;
+        blt_tensor_view_2d(&b_tmp, b_buf, b->shape[0], b->shape[1], BLT_BACKEND_CPU);
+        b_tmp.dtype = BLT_DTYPE_FP32;
+        blt_cast(a, &a_tmp);
+        blt_cast(b, &b_tmp);
+
+        blt_matmul_backward_cpu(&a_tmp, &b_tmp, grad_out, grad_a, grad_b);
+
+        free(a_buf);
+        free(b_buf);
+        return;
+    }
 
     size_t M = a->shape[0];
     size_t K = a->shape[1];
