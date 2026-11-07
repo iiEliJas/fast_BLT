@@ -30,7 +30,7 @@ full workflow, see [docs/RESEARCH_GUIDE.md](docs/RESEARCH_GUIDE.md).
 | # | Item | Area | Status |
 |---|------|------|--------|
 | 1 | Gradient accumulation / batch > 1 | Training | Done (PR #66) |
-| 2 | BF16 mixed-precision training | Training | Done (global transformer, PR #68) |
+| 2 | BF16 mixed-precision training | Training | Done (`--dtype bf16`, encoder/global/decoder) |
 | 3 | Multi-GPU data parallel | Training | Design draft |
 | 4 | Evaluation harness (BPB + CORE tasks) | Evaluation | Open |
 | 5 | MuonAdamW and optimizer parameter groups | Training | Open |
@@ -175,90 +175,52 @@ clipping and the optimizer step (`scripts/base_train.py`, `nanochat/optim.py`).
 
 ## 2. BF16 mixed-precision training
 
-- **Status:** Partially wired, not usable end-to-end
+- **Status:** Done (`--dtype bf16`, CUDA only)
 - **Area:** Training
 - **Depends on:** nothing
 
 ### Why
 
-The BF16 matmul path is already faster than FP32 on CUDA, but the trainer cannot enable it
-end-to-end. The global transformer has BF16 weight copies, while the local encoder and decoder
-do not. The refresh function that copies updated FP32 master weights into the BF16 views is
-never called, so enabling the existing flag would train on stale or uninitialized data.
-
-### Current state
-
-- `BLT_DTYPE_BF16` exists in `csrc/core/dtype.h`.
-- `blt_cast` supports FP32 <-> BF16 on CPU and CUDA.
-- `blt_matmul` supports BF16 inputs with FP32 accumulation through `cublasGemmEx` on CUDA.
-- `blt_transformer_stack_config` has `use_bf16`; `blt_transformer_stack_init` allocates BF16
-  copies of the matmul weights and uses them in the forward pass.
-- `blt_mixed_weight_refresh` exists in `csrc/models/transformer_stack.c` but is never called.
-- Only `blt_global_transformer_config` exposes `use_bf16`.
-- The model defaults zero the config, so `use_bf16` is always off.
-- The trainer has no `--bf16` or `--dtype` flag.
-- Optimizer state and checkpoints remain FP32.
+BF16 tensor cores are 2-3x faster than FP32 SIMT for the GEMMs that dominate a transformer
+step. The goal was to expose that path end-to-end without giving up FP32 master weights,
+optimizer state, or checkpoint compatibility.
 
 ### Implementation
 
-#### Global transformer
+- `--dtype fp32|bf16` (`--bf16` alias) is wired through `args_t`, `fblt.TrainConfig`, and the
+  CLI docs.
+- The local encoder, global transformer, and local decoder allocate BF16 shadow copies of
+  their matmul weights (QKV, attention projection, FFN up/gate/down, and the four
+  cross-attention projections). Norms, embeddings, the LM head, the D0 table, softmax,
+  cross-entropy, optimizer state, and checkpoints stay FP32.
+- `blt_model_refresh_bf16` rebuilds every shadow from its FP32 master after model creation or
+  `--load-weights`, and after every optimizer step (before periodic evaluation and
+  `blt_monitor`).
+- Forward matmuls and the backward input-gradient GEMM run as BF16 tensor-core GEMMs with FP32
+  accumulation. The weight-gradient GEMM and the optimizer remain FP32.
+- `--dtype bf16` on CPU exits with an error. The CPU matmul path only emulates the cast with
+  FP32 temporaries and serves as the parity ground truth.
+- The trainer reports `dtype=` in the startup line, `RESULT`, and the metrics JSON.
 
-1. Add `--bf16` (or `--dtype bf16|fp32`) to `args_t`, `TrainConfig`, and the CLI docs.
-2. Before `blt_model_create`, set `cfg.global_config.use_bf16 = a.use_bf16`.
-3. After model creation and weight loading, call a new `blt_model_refresh_bf16(model)` that
-   walks every FP32/BF16 pair and refreshes the BF16 view.
-4. After every optimizer step, refresh the BF16 views from the FP32 masters. If a refresh
-   interval is added, document the approximation and keep correctness as the default.
-5. Require CUDA:
+### Acceptance evidence
 
-   ```c
-   BLT_REQUIRE(!a.use_bf16 || a.use_cuda, "--bf16 requires --backend cuda");
-   ```
-
-   The CPU BF16 matmul path converts to FP32 temporaries, so it is not a speed path.
-
-#### Local encoder and decoder
-
-6. Add `use_bf16` to `blt_local_encoder_config` and `blt_local_decoder_config`, and propagate
-   it to their internal transformer stacks.
-7. If the local modules use their own layer storage rather than
-   `blt_transformer_stack_init`, add BF16 copy tensors and the same refresh pattern.
-8. Extend `blt_model_refresh_bf16` to cover encoder and decoder layers.
-9. Re-run the numerical parity and loss-curve checks. The local layers dominate the parameter
-   count and compute, so this is where the speedup should appear.
-
-#### Training loop and checkpoints
-
-10. Print the active dtype in the startup line and `RESULT`.
-11. Keep norms, softmax, cross-entropy, and optimizer state in FP32. Cast only matmul inputs.
-12. Serialize FP32 masters only. Reconstruct BF16 views after loading. A BF16-trained
-    checkpoint must load into an FP32 model and produce the same outputs within tolerance.
-13. Document the `--model-mb` impact of the extra BF16 copies.
-
-### Acceptance
-
-- `--bf16` on CUDA reduces step time on a matmul-bound config.
-- The loss curve stays within a documented tolerance of FP32, with no NaN/Inf over a long run.
-- BF16 views are refreshed after optimizer steps; a unit test mutates a master weight and
-  checks that the view changes.
-- `--bf16` on CPU exits with a clear error.
-- Checkpoints remain FP32 and load into both FP32 and BF16 models.
-
-### Tests and docs
-
-- Unit test for `blt_mixed_weight_refresh` and `blt_model_refresh_bf16` across every layer type.
-- Integration test comparing several steps of FP32 and BF16 with the same seed/data.
-- Add a CUDA benchmark entry with dtype and hardware metadata.
-- Document the flag, numerical expectations, and CPU limitation in `docs/CLI_REFERENCE.md`
-  and the README.
+- Raw BF16 GEMMs are 2.2-3.2x FP32 on an RTX 4060 (`cuda_bench`). End-to-end step time drops
+  1.5-3.9% at the tested configs because those steps are launch-bound rather than GEMM-bound;
+  the measured numbers and commands are in `docs/BENCHMARKS.md`.
+- `tests/unit/models/test_bf16_mixed.c` checks refresh across every layer type and the mixed
+  FP32 x BF16 CPU matmul.
+- `tests/unit/models/test_bf16_integration.c` trains FP32 and BF16 from the same seed,
+  compares loss curves, checks every weight stays finite, and round-trips a checkpoint into
+  both FP32 and BF16 models.
+- `tests/parity/parity_cuda_matmul.c` checks mixed forward and backward GEMMs against the CPU
+  ground truth.
 
 ### Risks
 
-- Stale BF16 views are the most likely failure mode. Enabling `use_bf16` without a refresh
-  trains on garbage.
-- BF16 has a narrow mantissa. Keep normalization, softmax, cross-entropy, and optimizer state
-  in FP32.
-- Do not serialize BF16 copies; that breaks checkpoint compatibility and wastes space.
+- Shadow weights are invisible to checkpoints and the optimizer. Adding a matmul weight means
+  adding it to the refresh path; a missing entry trains on stale values.
+- Keep normalization, softmax, cross-entropy, and optimizer state in FP32; BF16 has a narrow
+  mantissa.
 - Windows CUDA is compile-checked only. Runtime validation needs a real GPU.
 
 ---

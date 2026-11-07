@@ -12,7 +12,7 @@ The project implements ideas from two Meta FAIR papers:
 
 ## Status
 
-Version 1.0 is a complete implementation of the training and inference pipeline. The largest demonstrated model is **7.8M parameters** (TinyStories, 600k steps). CPU and CUDA builds are supported. Features such as multi-GPU training, BF16 mixed precision, and post-training (SFT/RL) are not implemented in 1.0; see [todo.md](todo.md).
+Version 1.0 is a complete implementation of the training and inference pipeline. The largest demonstrated model is **7.8M parameters** (TinyStories, 600k steps). CPU and CUDA builds are supported. BF16 mixed-precision training is available on CUDA (`--dtype bf16`); multi-GPU training and post-training (SFT/RL) are not implemented in 1.0; see [todo.md](todo.md).
 
 ## Example output
 
@@ -117,7 +117,7 @@ At the 7.8M-parameter scale, BLT-DV beats greedy decoding only at the trained bl
 - CUDA runs are non-deterministic unless `--deterministic` is passed.
 - Sampling (`--temperature`, `--top-p`, `--top-k`, etc.) works only with `--method greedy`.
 - Single-GPU / single-process only.
-- BF16 mixed precision is not implemented (FP32 only).
+- BF16 mixed precision is CUDA-only. The trainer keeps FP32 master weights, optimizer state, normalization, softmax, cross-entropy, and checkpoints; only forward matmul operands and the backward input-gradient GEMM read the BF16 shadows. The local encoder/decoder and the global transformer all use BF16 shadow weights, refreshed after every optimizer step. On CPU the trainer rejects `--dtype bf16` because the CPU matmul path only emulates the cast with FP32 temporaries. Raw BF16 GEMMs are 2.2-3.2x faster than FP32 on an RTX 4060, but end-to-end step time improves only a few percent at the model sizes in this repository; see [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## Community experiments
 

@@ -94,7 +94,10 @@ void blt_cast_cpu(const blt_tensor *in, blt_tensor *out) {
     BLT_REQUIRE(in != NULL && out != NULL, "blt_cast: in and out must not be NULL");
     BLT_REQUIRE(in->numel == out->numel, "blt_cast: in and out must have the same numel");
 
-    if (in->dtype == out->dtype) return;
+    if (in->dtype == out->dtype) {
+        if (in->data != out->data) memcpy(out->data, in->data, in->numel * blt_dtype_sizeof(in->dtype));
+        return;
+    }
 
     if (in->dtype == BLT_DTYPE_FP32 && out->dtype == BLT_DTYPE_BF16) {
         const float *src = (const float *)in->data;

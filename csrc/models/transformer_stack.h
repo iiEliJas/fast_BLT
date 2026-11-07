@@ -106,6 +106,10 @@ void blt_transformer_layer_backward(const blt_transformer_layer_cache *cache, co
 
 void blt_transformer_stack_refresh_fp8(blt_transformer_stack *stack);
 
+// Copies each layer's FP32 matmul weights into their BF16 shadows.
+// No-op when the stack was not initialised with use_bf16.
+void blt_transformer_stack_refresh_bf16(blt_transformer_stack *stack);
+
 #ifdef __cplusplus
 }
 #endif

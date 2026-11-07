@@ -27,6 +27,7 @@ typedef struct {
     float rope_theta;
     size_t max_seq_len;
     size_t vocab_size; // 256, for the LM head
+    bool use_bf16;     // allocate BF16 shadow copies of matmul weights
 } blt_local_decoder_config;
 
 // D_0 policy for rows without an encoder h_final state.
@@ -60,6 +61,7 @@ typedef struct {
     blt_local_decoder_config config;
     blt_tensor rope_cos_cache, rope_sin_cache;
     blt_local_decoder_layer_storage *layers; // [num_layers]
+    blt_local_layer_bf16 *layers_bf16;       // [num_layers], NULL when use_bf16 is false
     blt_tensor lm_head_weight;               // [embed_dim, vocab_size]
     blt_tensor d0_embed_weight;              // [BLT_D0_VOCAB, embed_dim]
                                              // D_0 rows for draft/MASK positions
@@ -81,6 +83,10 @@ typedef struct {
 blt_local_decoder *blt_local_decoder_create(blt_arena *arena, const blt_local_decoder_config *config);
 
 blt_local_decoder_grad *blt_local_decoder_grad_create(blt_arena *arena, const blt_local_decoder *model);
+
+// Copies every layer's FP32 matmul weights into its BF16 shadow.
+// No-op when the model was not created with use_bf16.
+void blt_local_decoder_refresh_bf16(blt_local_decoder *model);
 
 // doc_boundaries uses the mask-builder convention: entry[d] starts document
 // d+1 and document 0 starts implicitly at byte 0; num_docs is the document

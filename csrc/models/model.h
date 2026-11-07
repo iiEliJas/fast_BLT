@@ -39,6 +39,10 @@ void blt_model_grad_zero(const blt_model *model, blt_model_grad *grad);
 void blt_model_grad_add(const blt_model *model, blt_model_grad *dst, const blt_model_grad *src);
 void blt_model_grad_scale(const blt_model *model, blt_model_grad *grad, float scale);
 
+// Refreshes every BF16 shadow weight from its FP32 master. Call once per
+// step after the optimizer update and before the next forward pass.
+void blt_model_refresh_bf16(blt_model *model);
+
 typedef struct {
     blt_tensor patch_out;         // P_final [num_patches, patch_dim]
     blt_tensor global_out;        // O       [num_patches, embed_dim]

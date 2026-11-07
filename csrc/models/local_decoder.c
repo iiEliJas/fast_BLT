@@ -182,6 +182,15 @@ blt_local_decoder *blt_local_decoder_create(blt_arena *arena, const blt_local_de
         blt_local_layer_storage_alloc(arena, &m->layers[l], E, hidden);
     }
 
+    m->layers_bf16 = NULL;
+    if (config->use_bf16) {
+        m->layers_bf16 =
+            (blt_local_layer_bf16 *)blt_container_alloc(arena, config->num_layers * sizeof(blt_local_layer_bf16));
+        for (size_t l = 0; l < config->num_layers; ++l) {
+            blt_local_layer_bf16_alloc(arena, &m->layers_bf16[l], E, hidden);
+        }
+    }
+
     size_t lm_head_shape[2] = {E, config->vocab_size};
     m->lm_head_weight = blt_tensor_create(arena, lm_head_shape, 2, BLT_DTYPE_FP32);
 
@@ -192,6 +201,15 @@ blt_local_decoder *blt_local_decoder_create(blt_arena *arena, const blt_local_de
     m->d0_embed_weight = blt_tensor_create(arena, d0_embed_shape, 2, BLT_DTYPE_FP32);
 
     return m;
+}
+
+void blt_local_decoder_refresh_bf16(blt_local_decoder *model) {
+    if (model == NULL || !model->config.use_bf16 || model->layers_bf16 == NULL) {
+        return;
+    }
+    for (size_t l = 0; l < model->config.num_layers; ++l) {
+        blt_local_layer_bf16_refresh(&model->layers_bf16[l], &model->layers[l]);
+    }
 }
 
 blt_local_decoder_grad *blt_local_decoder_grad_create(blt_arena *arena, const blt_local_decoder *model) {
@@ -322,6 +340,7 @@ void blt_local_decoder_forward_ext(const blt_local_decoder *model, const blt_ten
     // layer loop: cross-attn, byte transformer block
     for (size_t l = 0; l < config->num_layers; ++l) {
         const blt_local_decoder_layer_storage *s = &model->layers[l];
+        const blt_local_layer_bf16 *bf = model->config.use_bf16 ? &model->layers_bf16[l] : NULL;
         blt_tensor b;
 
         if (blt_local_cross_attn_fires(config->cross_attn_placement, config->cross_attn_all_layers, config->num_layers,
@@ -329,7 +348,7 @@ void blt_local_decoder_forward_ext(const blt_local_decoder *model, const blt_ten
             blt_tensor normed_d = blt_tensor_create(arena, byte_shape, 2, BLT_DTYPE_FP32);
             blt_rmsnorm_forward(&d, &s->cross_norm_weight, &normed_d);
 
-            blt_cross_attention_weights xw = blt_local_cross_weights_view(s);
+            blt_cross_attention_weights xw = blt_local_cross_weights_view_mixed(s, bf);
             blt_tensor cross_out = blt_tensor_create(arena, byte_shape, 2, BLT_DTYPE_FP32);
             blt_cross_attention_forward(&normed_d, &patch_in_split, &xw, &cross_out, &cross_config, arena);
 
@@ -339,7 +358,7 @@ void blt_local_decoder_forward_ext(const blt_local_decoder *model, const blt_ten
             b = d;
         }
 
-        blt_transformer_weights w = blt_local_byte_weights_view(s);
+        blt_transformer_weights w = blt_local_byte_weights_view_mixed(s, bf);
         blt_tensor d_next = blt_tensor_create(arena, byte_shape, 2, BLT_DTYPE_FP32);
         blt_transformer_forward(&b, &w, &d_next, &layer_config, arena);
         d = d_next;
@@ -433,6 +452,7 @@ void blt_local_decoder_backward(const blt_local_decoder *model, const blt_tensor
     for (size_t l = 0; l < L; ++l) {
         const blt_local_decoder_layer_storage *s = &model->layers[l];
         dec_layer_cache *c = &caches[l];
+        const blt_local_layer_bf16 *bf = model->config.use_bf16 ? &model->layers_bf16[l] : NULL;
         c->d_in = d[l];
 
         blt_tensor b;
@@ -443,7 +463,7 @@ void blt_local_decoder_backward(const blt_local_decoder *model, const blt_tensor
             c->normed_d = blt_tensor_create(arena, byte_shape, 2, BLT_DTYPE_FP32);
             blt_rmsnorm_forward(&d[l], &s->cross_norm_weight, &c->normed_d);
 
-            blt_cross_attention_weights xw = blt_local_cross_weights_view(s);
+            blt_cross_attention_weights xw = blt_local_cross_weights_view_mixed(s, bf);
             blt_tensor cross_out = blt_tensor_create(arena, byte_shape, 2, BLT_DTYPE_FP32);
             blt_cross_attention_forward(&c->normed_d, &patch_in_split, &xw, &cross_out, &cross_config, arena);
 
@@ -454,7 +474,7 @@ void blt_local_decoder_backward(const blt_local_decoder *model, const blt_tensor
             b = d[l];
         }
 
-        blt_transformer_weights w = blt_local_byte_weights_view(s);
+        blt_transformer_weights w = blt_local_byte_weights_view_mixed(s, bf);
         c->byte_cache = blt_transformer_layer_forward_cached(&b, &w, &layer_config, arena, seq_len, E,
                                                              config->hidden_dim, &d[l + 1]);
     }
@@ -492,9 +512,10 @@ void blt_local_decoder_backward(const blt_local_decoder *model, const blt_tensor
         const blt_local_decoder_layer_storage *s = &model->layers[li];
         blt_local_decoder_layer_grad *lg = &grad->layer_grads[li];
         const dec_layer_cache *c = &caches[li];
+        const blt_local_layer_bf16 *b = model->config.use_bf16 ? &model->layers_bf16[li] : NULL;
 
         // byte transformer block backward: dh becomes dL/d(b) for this layer
-        blt_transformer_weights w = blt_local_byte_weights_view(s);
+        blt_transformer_weights w = blt_local_byte_weights_view_mixed(s, b);
         blt_transformer_layer_grad lgv = blt_local_byte_grad_view(lg);
         blt_tensor grad_b;
         blt_transformer_layer_backward(c->byte_cache, &w, &layer_config, arena, seq_len, E, config->hidden_dim, &dh,
@@ -502,7 +523,7 @@ void blt_local_decoder_backward(const blt_local_decoder *model, const blt_tensor
 
         if (c->has_cross) {
             // b = d_in + cross_out  =>  residual: d(d_in) += grad_b, d(cross_out) = grad_b
-            blt_cross_attention_weights xw = blt_local_cross_weights_view(s);
+            blt_cross_attention_weights xw = blt_local_cross_weights_view_mixed(s, b);
             blt_cross_attention_grad xg = {0};
             xg.grad_weight_q = lg->cross_weight_q;
             xg.grad_weight_k = lg->cross_weight_k;

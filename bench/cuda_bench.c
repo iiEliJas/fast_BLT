@@ -322,11 +322,14 @@ static void scenario_build(scenario *sc, blt_arena *host, blt_arena *persist, bl
     (void)scratch;
     blt_model_config cfg;
     build_model_config(&cfg, 2048);
+    cfg.encoder_config.use_bf16 = use_bf16;
+    cfg.decoder_config.use_bf16 = use_bf16;
     cfg.global_config.use_bf16 = use_bf16;
 
     sc->model = blt_model_create(persist, &cfg);
     uint32_t seed = 0x5EED0000u ^ (uint32_t)seq;
     randomize_model(sc->model, host, &seed);
+    blt_model_refresh_bf16(sc->model);
     sc->grad = blt_model_grad_create(persist, sc->model);
 
     sc->bytes_in = blt_tensor_create(persist, (size_t[1]){seq}, 1, BLT_DTYPE_UINT8);
@@ -397,21 +400,6 @@ static void meso_cell(blt_arena *host, blt_arena *arena, size_t seq, size_t iter
     blt_arena_destroy(scratch);
 }
 
-// Refresh bf16 weight copies from fp32 masters for the global transformer's
-// transformer stack. Called once after randomizing model weights.
-static void refresh_global_bf16_weights(blt_model *model) {
-    blt_transformer_stack *stack = &model->global->stack;
-    if (!stack->use_bf16) return;
-    for (size_t l = 0; l < stack->num_layers; l++) {
-        const blt_transformer_layer_storage *s = &stack->layer_storage[l];
-        blt_mixed_weight_refresh((blt_tensor *)&s->attn_qkv_w_bf16, &s->attn_qkv_w);
-        blt_mixed_weight_refresh((blt_tensor *)&s->attn_proj_w_bf16, &s->attn_proj_w);
-        blt_mixed_weight_refresh((blt_tensor *)&s->ffn_up_w_bf16, &s->ffn_up_w);
-        blt_mixed_weight_refresh((blt_tensor *)&s->ffn_gate_w_bf16, &s->ffn_gate_w);
-        blt_mixed_weight_refresh((blt_tensor *)&s->ffn_down_w_bf16, &s->ffn_down_w);
-    }
-}
-
 static void meso_cell_bf16(blt_arena *host, blt_arena *arena, size_t seq, size_t iters, const char *backend_tag,
                            const char *results_path) {
     blt_arena_reset(host);
@@ -419,7 +407,6 @@ static void meso_cell_bf16(blt_arena *host, blt_arena *arena, size_t seq, size_t
     blt_arena *scratch = blt_arena_create(768 * 1024 * 1024, arena->backend);
     scenario sc;
     scenario_build(&sc, host, arena, scratch, seq, 1);
-    refresh_global_bf16_weights(sc.model);
 
     bench_timer_start();
     for (size_t i = 0; i < iters + 2; i++) {

@@ -307,10 +307,16 @@ void blt_multihead_attention_backward(const blt_tensor *input, const blt_tensor 
     blt_check_nd_fp32(input, 2, (const size_t[]){0, embed_dim},
                       "blt_multihead_attention_backward: input must be [seq_len, embed_dim] FP32");
     size_t seq_len = input->shape[0];
-    blt_check_nd_fp32(weight_qkv, 2, (const size_t[]){embed_dim, 3 * embed_dim},
-                      "blt_multihead_attention_backward: weight_qkv must be [embed_dim, 3*embed_dim] FP32");
-    blt_check_nd_fp32(weight_proj, 2, (const size_t[]){embed_dim, embed_dim},
-                      "blt_multihead_attention_backward: weight_proj must be [embed_dim, embed_dim] FP32");
+    BLT_REQUIRE(weight_qkv != NULL && weight_qkv->ndim == 2 && weight_qkv->shape[0] == embed_dim &&
+                    weight_qkv->shape[1] == 3 * embed_dim,
+                "blt_multihead_attention_backward: weight_qkv must be [embed_dim, 3*embed_dim]");
+    BLT_REQUIRE(is_fp32_or_bf16(weight_qkv->dtype),
+                "blt_multihead_attention_backward: weight_qkv must be FP32 or BF16");
+    BLT_REQUIRE(weight_proj != NULL && weight_proj->ndim == 2 && weight_proj->shape[0] == embed_dim &&
+                    weight_proj->shape[1] == embed_dim,
+                "blt_multihead_attention_backward: weight_proj must be [embed_dim, embed_dim]");
+    BLT_REQUIRE(is_fp32_or_bf16(weight_proj->dtype),
+                "blt_multihead_attention_backward: weight_proj must be FP32 or BF16");
     blt_check_nd_fp32(grad_out, 2, (const size_t[]){seq_len, embed_dim},
                       "blt_multihead_attention_backward: grad_out must be [seq_len, embed_dim] FP32");
 

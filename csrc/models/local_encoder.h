@@ -33,6 +33,7 @@ typedef struct {
     blt_hash_ngram_config ngram_config;       // embed_dim must match config.embed_dim
     float rope_theta;                         // RoPE base frequency
     size_t max_seq_len;                       // Maximum sequence length for RoPE cache
+    bool use_bf16;                            // allocate BF16 shadow copies of matmul weights
 } blt_local_encoder_config;
 
 typedef blt_local_layer_storage blt_local_encoder_layer_storage;
@@ -44,6 +45,7 @@ typedef struct {
     blt_tensor rope_cos_cache;               // [max_seq_len, head_dim / 2]
     blt_tensor rope_sin_cache;               // [max_seq_len, head_dim / 2]
     blt_local_encoder_layer_storage *layers; // [num_layers]
+    blt_local_layer_bf16 *layers_bf16;       // [num_layers], NULL when use_bf16 is false
 } blt_local_encoder;
 
 typedef blt_local_layer_grad blt_local_encoder_layer_grad;
@@ -72,6 +74,10 @@ blt_local_encoder_grad *blt_local_encoder_grad_create(blt_arena *arena, const bl
 void blt_local_encoder_forward(const blt_local_encoder *model, const blt_tensor *bytes_in,
                                const blt_patch_info *patches, size_t num_patches, const size_t *doc_boundaries,
                                size_t num_docs, blt_tensor *patch_out, blt_tensor *byte_hidden_out, blt_arena *arena);
+
+// Copies every layer's FP32 matmul weights into its BF16 shadow.
+// No-op when the model was not created with use_bf16.
+void blt_local_encoder_refresh_bf16(blt_local_encoder *model);
 
 // grad_patch_out [num_patches, embed_dim] (dL/dP_final),
 // grad_byte_hidden_out [seq_len, embed_dim] (dL/dh_final, optional).

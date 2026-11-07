@@ -10,6 +10,8 @@
 #include <cuda_fp8.h>
 #include <cublasLt.h>
 
+extern "C" void blt_cast_cuda(const blt_tensor *in, blt_tensor *out);
+
 // fp32 GEMMs on cuBLAS. cuBLAS is column-major; row-major C = A @ B maps to
 // the standard swapped-operand formulation C' = B' @ A' (primes denote the
 // col-major views of the same row-major buffers), so no transposes or
@@ -98,6 +100,34 @@ extern "C" void blt_matmul_cuda(const blt_tensor *a, const blt_tensor *b, blt_te
     const float beta = 0.0f;
     cublasHandle_t h = blt_cublas_handle();
 
+    // Mixed precision: if one operand is bf16 and the other fp32, cast the fp32
+    // operand to bf16 in scratch and recurse with both bf16.
+    if ((a->dtype == BLT_DTYPE_FP32 && b->dtype == BLT_DTYPE_BF16) ||
+        (a->dtype == BLT_DTYPE_BF16 && b->dtype == BLT_DTYPE_FP32)) {
+        const blt_tensor *fp32_op = (a->dtype == BLT_DTYPE_FP32) ? a : b;
+        void *scratch =
+            blt_arena_alloc(blt_cuda_get_scratch_arena(), fp32_op->numel * blt_dtype_sizeof(BLT_DTYPE_BF16), 64);
+        extern void blt_cast_cuda(const blt_tensor *, blt_tensor *);
+
+        blt_tensor bf16_view = *fp32_op;
+        bf16_view.dtype = BLT_DTYPE_BF16;
+        bf16_view.data = scratch;
+        bf16_view.backend = BLT_BACKEND_CUDA;
+        blt_cast_cuda(fp32_op, &bf16_view);
+
+        // Both operands are bf16 after the cast, so the recursive call takes the
+        // tensor-core branch below and never re-enters this one.
+        blt_tensor a_bf16 = *a;
+        blt_tensor b_bf16 = *b;
+        if (a->dtype == BLT_DTYPE_FP32) {
+            a_bf16 = bf16_view;
+        } else {
+            b_bf16 = bf16_view;
+        }
+        blt_matmul_cuda(&a_bf16, &b_bf16, out);
+        return;
+    }
+
     // bf16 inputs: use tensor cores via cublasGemmEx, accumulate in fp32
     if (a->dtype == BLT_DTYPE_BF16 && b->dtype == BLT_DTYPE_BF16) {
         blt_cublas_check(cublasGemmEx(h, CUBLAS_OP_N, CUBLAS_OP_N, (int)n, (int)m, (int)k, &alpha, b->data, CUDA_R_16BF,
@@ -139,6 +169,8 @@ extern "C" void blt_matmul_cuda(const blt_tensor *a, const blt_tensor *b, blt_te
 // a: [M,K], b: [K,N], grad_out: [M,N]
 // grad_a: [M,K] = grad_out @ b^T   (overwritten when non-NULL)
 // grad_b: [K,N] = a^T @ grad_out   (overwritten when non-NULL)
+// a or b may be BF16 shadows: the narrowed operand runs on tensor cores and
+// both gradients still accumulate in FP32.
 extern "C" void blt_matmul_backward_cuda(const blt_tensor *a, const blt_tensor *b, const blt_tensor *grad_out,
                                          blt_tensor *grad_a, blt_tensor *grad_b) {
     const size_t m = a->shape[0];
@@ -152,19 +184,48 @@ extern "C" void blt_matmul_backward_cuda(const blt_tensor *a, const blt_tensor *
     const float beta = 0.0f;
     cublasHandle_t h = blt_cublas_handle();
 
+    const bool a_bf16 = a->dtype == BLT_DTYPE_BF16;
+    const bool b_bf16 = b->dtype == BLT_DTYPE_BF16;
+
+    // grad_a and grad_b both consume grad_out; when either operand is BF16,
+    // stage one BF16 copy of grad_out and issue tensor-core GEMMs with FP32
+    // accumulation. grad_b accumulates in FP32 regardless.
+    blt_tensor go_bf16 = *grad_out;
+    if ((a_bf16 || b_bf16) && (grad_a != NULL || grad_b != NULL)) {
+        void *scratch = blt_arena_alloc(blt_cuda_get_scratch_arena(), (size_t)m * n * sizeof(uint16_t), 64);
+        go_bf16.dtype = BLT_DTYPE_BF16;
+        go_bf16.data = scratch;
+        go_bf16.backend = BLT_BACKEND_CUDA;
+        blt_cast_cuda(grad_out, &go_bf16);
+    }
+
     if (grad_a != NULL) {
         // Rc[K,M] = Bc^T @ Gc : op(T) on b, op(N) on grad_out
-        blt_cublas_check(cublasSgemm(h, CUBLAS_OP_T, CUBLAS_OP_N, (int)k, (int)m, (int)n, &alpha,
-                                     (const float *)b->data, (int)n, (const float *)grad_out->data, (int)n, &beta,
-                                     (float *)grad_a->data, (int)k),
-                         "blt_matmul_backward: cublasSgemm (grad_a)");
+        if (b_bf16) {
+            blt_cublas_check(cublasGemmEx(h, CUBLAS_OP_T, CUBLAS_OP_N, (int)k, (int)m, (int)n, &alpha, b->data,
+                                          CUDA_R_16BF, (int)n, go_bf16.data, CUDA_R_16BF, (int)n, &beta, grad_a->data,
+                                          CUDA_R_32F, (int)k, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP),
+                             "blt_matmul_backward: cublasGemmEx bf16 (grad_a)");
+        } else {
+            blt_cublas_check(cublasSgemm(h, CUBLAS_OP_T, CUBLAS_OP_N, (int)k, (int)m, (int)n, &alpha,
+                                         (const float *)b->data, (int)n, (const float *)grad_out->data, (int)n, &beta,
+                                         (float *)grad_a->data, (int)k),
+                             "blt_matmul_backward: cublasSgemm (grad_a)");
+        }
     }
 
     if (grad_b != NULL) {
         // Sc[N,K] = Gc @ Ac^T : op(N) on grad_out, op(T) on a
-        blt_cublas_check(cublasSgemm(h, CUBLAS_OP_N, CUBLAS_OP_T, (int)n, (int)k, (int)m, &alpha,
-                                     (const float *)grad_out->data, (int)n, (const float *)a->data, (int)k, &beta,
-                                     (float *)grad_b->data, (int)n),
-                         "blt_matmul_backward: cublasSgemm (grad_b)");
+        if (a_bf16) {
+            blt_cublas_check(cublasGemmEx(h, CUBLAS_OP_N, CUBLAS_OP_T, (int)n, (int)k, (int)m, &alpha, go_bf16.data,
+                                          CUDA_R_16BF, (int)n, a->data, CUDA_R_16BF, (int)k, &beta, grad_b->data,
+                                          CUDA_R_32F, (int)n, CUBLAS_COMPUTE_32F, CUBLAS_GEMM_DEFAULT_TENSOR_OP),
+                             "blt_matmul_backward: cublasGemmEx bf16 (grad_b)");
+        } else {
+            blt_cublas_check(cublasSgemm(h, CUBLAS_OP_N, CUBLAS_OP_T, (int)n, (int)k, (int)m, &alpha,
+                                         (const float *)grad_out->data, (int)n, (const float *)a->data, (int)k, &beta,
+                                         (float *)grad_b->data, (int)n),
+                             "blt_matmul_backward: cublasSgemm (grad_b)");
+        }
     }
 }

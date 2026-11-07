@@ -153,7 +153,8 @@ void blt_kv_cache_refresh_cross(blt_kv_cache *cache, const blt_tensor *patch_in,
             continue;
         }
         const blt_local_decoder_layer_storage *s = &dec->layers[l];
-        blt_cross_attention_weights xw = blt_local_cross_weights_view(s);
+        const blt_local_layer_bf16 *bf = dec->config.use_bf16 ? &dec->layers_bf16[l] : NULL;
+        blt_cross_attention_weights xw = blt_local_cross_weights_view_mixed(s, bf);
         refresh_cross_layer(cache, l, &xw, &patch_in_split, from_patch * cache->k,
                             (num_patches - from_patch) * cache->k);
     }
@@ -286,12 +287,13 @@ void blt_kv_decode_step(blt_kv_cache *cache, const blt_tensor *patch_in, const b
     const size_t L = cfg->num_layers;
     for (size_t l = 0; l < L; l++) {
         const blt_local_decoder_layer_storage *s = &dec->layers[l];
-        blt_transformer_weights w = blt_local_byte_weights_view(s);
+        const blt_local_layer_bf16 *bf = cfg->use_bf16 ? &dec->layers_bf16[l] : NULL;
+        blt_transformer_weights w = blt_local_byte_weights_view_mixed(s, bf);
         size_t shape2[2] = {n, E};
         blt_tensor b;
 
         if (blt_local_cross_attn_fires(cfg->cross_attn_placement, cfg->cross_attn_all_layers, L, l)) {
-            blt_cross_attention_weights xw = blt_local_cross_weights_view(s);
+            blt_cross_attention_weights xw = blt_local_cross_weights_view_mixed(s, bf);
 
             blt_tensor normed_q = blt_tensor_create(arena, shape2, 2, BLT_DTYPE_FP32);
             blt_rmsnorm_forward(&cur, &s->cross_norm_weight, &normed_q);
