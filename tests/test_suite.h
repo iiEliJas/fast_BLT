@@ -59,12 +59,16 @@ int run_block_diffusion_overfit_gate(void);
 int run_block_diffusion_no_label_leak(void);
 int run_block_diffusion_last_row_upweight(void);
 int run_block_diffusion_draft_trailing_closed(void);
+int run_bf16_refresh_tests(void);
+int run_bf16_mixed_matmul(void);
+int run_bf16_integration_tests(void);
 
 int run_matmul_parity_test(void);
 int run_softmax_parity_test(void);
 int run_cuda_parity_elementwise(void);
 int run_cuda_parity_reductions(void);
 int run_cuda_parity_matmul(void);
+int run_cuda_parity_bf16_matmul(void);
 int run_cuda_parity_composites(void);
 int run_cuda_parity_training_step(void);
 int run_cuda_parity_clip_norm(void);

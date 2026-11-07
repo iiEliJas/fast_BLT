@@ -87,6 +87,9 @@ int main(void) {
         {"block diffusion has no label leak", run_block_diffusion_no_label_leak},
         {"block diffusion last-row upweight", run_block_diffusion_last_row_upweight},
         {"block diffusion draft trailing closed", run_block_diffusion_draft_trailing_closed},
+        {"bf16 refresh", run_bf16_refresh_tests},
+        {"bf16 mixed matmul", run_bf16_mixed_matmul},
+        {"bf16 fp32 integration", run_bf16_integration_tests},
     };
 
     const test_case parity_tests[] = {
@@ -95,6 +98,7 @@ int main(void) {
         {"cuda elementwise parity", run_cuda_parity_elementwise},
         {"cuda reductions parity", run_cuda_parity_reductions},
         {"cuda matmul parity", run_cuda_parity_matmul},
+        {"cuda bf16 matmul parity", run_cuda_parity_bf16_matmul},
         {"cuda composites parity", run_cuda_parity_composites},
         {"cuda training-step parity", run_cuda_parity_training_step},
         {"cuda clip-norm parity", run_cuda_parity_clip_norm},
