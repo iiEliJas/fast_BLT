@@ -21,6 +21,7 @@ static void usage(void) {
                     "  --max-norm F            gradient clip threshold (default 20000)\n"
                     "  --seed S                RNG seed (default 7)\n"
                     "  --backend cpu|cuda      backend (default cpu)\n"
+                    "  --dtype fp32|bf16       weight/activation precision (default fp32); --bf16 is an alias\n"
                     "  --cuda-scratch-mb N     CUDA kernel scratch pool size in MB\n"
                     "  --scratch-mb N           trainer scratch arena size in MB; 0 derives it from --window\n"
                     "                          (see docs/CLI_REFERENCE.md for the memory cost of long windows)\n"
@@ -160,7 +161,6 @@ args_t parse_args(int argc, char **argv) {
                 .metrics_log = NULL,
                 .deterministic = 0,
                 .bf16 = 0,
-                .bf16 = 0,
                 .flash_attn = 0,
                 .cuda_scratch_mb = 0,
                 .scratch_mb = 0,
@@ -285,11 +285,17 @@ args_t parse_args(int argc, char **argv) {
         else if (!strcmp(argv[i], "--doc-boundaries") && i + 1 < argc)
             snprintf(a.doc_boundaries, sizeof(a.doc_boundaries), "%s", argv[++i]);
         else if (!strcmp(argv[i], "--deterministic")) a.deterministic = 1;
-        else if (!strcmp(argv[i], "--bf16")) a.bf16 = 1;
+        else if (!strcmp(argv[i], "--dtype") && i + 1 < argc) {
+            ++i;
+            if (!strcmp(argv[i], "bf16")) a.bf16 = 1;
+            else if (!strcmp(argv[i], "fp32")) a.bf16 = 0;
+            else {
+                fprintf(stderr, "train_blt_d: unknown --dtype '%s' (expected fp32 or bf16)\n", argv[i]);
+                usage();
+            }
+        } else if (!strcmp(argv[i], "--bf16")) a.bf16 = 1;
         else if (!strcmp(argv[i], "--fp8")) a.fp8 = 1;
         else if (!strcmp(argv[i], "--flash-attn")) a.flash_attn = 1;
-        else if (!strcmp(argv[i], "--bf16")) a.bf16 = 1;
-        else if (!strcmp(argv[i], "--fp8")) a.fp8 = 1;
         else {
             usage();
         }

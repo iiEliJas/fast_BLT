@@ -307,20 +307,6 @@ static size_t blt_param_bytes(const blt_model *model) {
     return n;
 }
 
-static void refresh_bf16_weights(const blt_model *model) {
-    blt_transformer_stack *st = &model->global->stack;
-    if (!st->use_bf16 || !st->layer_weights_bf16) return;
-    for (size_t l = 0; l < st->num_layers; l++) {
-        blt_transformer_layer_storage *s = &st->layer_storage[l];
-        blt_transformer_weights_bf16 *b = &st->layer_weights_bf16[l];
-        blt_mixed_weight_refresh((blt_tensor *)b->attn_qkv_w, &s->attn_qkv_w);
-        blt_mixed_weight_refresh((blt_tensor *)b->attn_proj_w, &s->attn_proj_w);
-        blt_mixed_weight_refresh((blt_tensor *)b->ffn_up_w, &s->ffn_up_w);
-        blt_mixed_weight_refresh((blt_tensor *)b->ffn_gate_w, &s->ffn_gate_w);
-        blt_mixed_weight_refresh((blt_tensor *)b->ffn_down_w, &s->ffn_down_w);
-    }
-}
-
 static void refresh_fp8_weights(const blt_model *model) {
     if (model && model->global) blt_transformer_stack_refresh_fp8(&model->global->stack);
 }
@@ -371,7 +357,7 @@ int main(int argc, char **argv) {
         a.use_cuda = 0;
     }
     if (a.bf16 && !a.use_cuda) {
-        fprintf(stderr, "train_blt_d: --bf16 requires --backend cuda\n");
+        fprintf(stderr, "train_blt_d: --bf16/--dtype bf16 requires --backend cuda\n");
         return 1;
     }
     if (a.fp8 && !a.use_cuda) {
@@ -410,6 +396,7 @@ int main(int argc, char **argv) {
                     : "pass --peak-tflops/--peak-bandwidth to report MFU/MBU");
     }
     const char *const peak_dtype_name = a.fp8 ? "fp8" : (a.bf16 ? "bf16" : "fp32");
+    const char *const dtype_name = a.bf16 ? "bf16" : (a.fp8 ? "fp8" : "fp32");
     g_blt_deterministic = a.deterministic;
 #ifdef BLT_WITH_CUDA
     if (a.use_cuda && a.cuda_scratch_mb > 0) blt_cuda_set_scratch_size(a.cuda_scratch_mb * 1024ULL * 1024);
@@ -455,7 +442,11 @@ int main(int argc, char **argv) {
 
     blt_model_config cfg;
     blt_model_config_defaults(&cfg, a.embed, a.hidden, a.enc_layers, a.glob_layers, a.dec_layers, MS, a.cross_last);
-    if (a.bf16) cfg.global_config.use_bf16 = 1;
+    if (a.bf16) {
+        cfg.encoder_config.use_bf16 = 1;
+        cfg.decoder_config.use_bf16 = 1;
+        cfg.global_config.use_bf16 = 1;
+    }
     if (a.fp8) cfg.global_config.use_fp8 = 1;
 
     blt_model *model = blt_model_create(model_arena, &cfg);
@@ -664,14 +655,17 @@ int main(int argc, char **argv) {
 #undef RAND01
     }
 
+    blt_model_refresh_bf16(model);
+    refresh_fp8_weights(model);
+
     const size_t n_params = blt_count_params(model);
     printf("train_blt_d: mode=%s corpus=%s (%ld bytes) steps=%zu lr=%.4g B=%zu W=%zu "
-           "embed=%zu hidden=%zu enc/glob/dec layers=%zu/%zu/%zu xattn=%s backend=%s d0=%s"
+           "embed=%zu hidden=%zu enc/glob/dec layers=%zu/%zu/%zu xattn=%s backend=%s dtype=%s d0=%s"
            " optimizer=%s params=%zu (%.3fM)\n",
            a.diffusion ? "BLT-D" : "PLAIN-BLT", a.corpus_path, fsize, a.steps, (double)a.lr, a.block_size, a.window,
            a.embed, a.hidden, a.enc_layers, a.glob_layers, a.dec_layers, a.cross_last ? "last" : "all",
-           a.use_cuda ? "cuda" : "cpu", a.d0_learned ? "learned" : "zeros", a.optimizer ? "adamw" : "sgd", n_params,
-           (double)n_params / 1e6);
+           a.use_cuda ? "cuda" : "cpu", dtype_name, a.d0_learned ? "learned" : "zeros", a.optimizer ? "adamw" : "sgd",
+           n_params, (double)n_params / 1e6);
 
     // Telemetry: name the matched table entry and the source of each peak so a
     // disabled MFU/MBU is never confused with a measured 0 TFLOP/s.
@@ -851,8 +845,6 @@ int main(int argc, char **argv) {
                 blt_local_encoder_forward(model->encoder, &bytes_in, patches, M, NULL, 0, &P, &h, scratch);
 
                 blt_tensor O = blt_tensor_create(scratch, p_shape2, 2, BLT_DTYPE_FP32);
-                refresh_bf16_weights(model);
-                refresh_fp8_weights(model);
                 blt_global_transformer_forward(model->global, &P, NULL, 0, &O, scratch);
 
                 size_t S = N + batch.n_block_rows;
@@ -903,8 +895,6 @@ int main(int argc, char **argv) {
                 size_t lg_shape[2] = {N, 256};
                 blt_tensor logits = blt_tensor_create(scratch, lg_shape, 2, BLT_DTYPE_FP32);
                 blt_tensor loss = blt_tensor_create(scratch, sc_shape, 1, BLT_DTYPE_FP32);
-                refresh_bf16_weights(model);
-                refresh_fp8_weights(model);
                 blt_model_forward(model, &bytes_in, &targets, patches, M, NULL, 0, &logits, &loss, scratch);
 
                 if (adump_fp && ((step + 1) % a.report_every == 0 || step + 1 == end_step))
@@ -976,6 +966,10 @@ int main(int argc, char **argv) {
         } else {
             sgd_all(model, grad, lr, clip_scale);
         }
+        // The optimizer mutated the FP32 masters; rebuild every low-precision
+        // shadow so the next forward (report, monitor, eval) reads current weights.
+        blt_model_refresh_bf16(model);
+        refresh_fp8_weights(model);
         if (metrics_fp) {
             fprintf(metrics_fp, "{\"event\":\"train\",\"step\":%zu,\"loss\":%.6f,\"lr\":%.6g,\"grad_norm\":%.6f}\n",
                     step + 1, last_loss, (double)lr, (double)pre_clip_norm);
@@ -1340,19 +1334,20 @@ int main(int argc, char **argv) {
         snprintf(mbu_buf, sizeof(mbu_buf), "n/a");
     }
     printf("RESULT mode=%s steps=%zu embed=%zu window=%zu B=%zu "
-           "enc/glob/dec=%zu/%zu/%zu xattn=%s backend=%s "
+           "enc/glob/dec=%zu/%zu/%zu xattn=%s backend=%s dtype=%s "
            "eval_windows=%zu causal_bpb=%.4f masked_acc=%.3f (%zu/%zu) params=%zu "
            "device=%s peak_tflops=%.2f mfu=%s mbu=%s\n",
            a.diffusion ? "bltd" : "plain", a.steps, a.embed, a.window, a.block_size, a.enc_layers, a.glob_layers,
-           a.dec_layers, a.cross_last ? "last" : "all", a.use_cuda ? "cuda" : "cpu", eval_count, bpb,
+           a.dec_layers, a.cross_last ? "last" : "all", a.use_cuda ? "cuda" : "cpu", dtype_name, eval_count, bpb,
            total ? (double)hits / (double)total : 0.0, hits, total, n_params, device_name ? device_name : "unknown",
            (double)a.peak_tflops, mfu_buf, mbu_buf);
 
     if (metrics_fp) {
         const size_t n_params = blt_count_params(model);
         fprintf(metrics_fp,
-                "{\"event\":\"result\",\"steps\":%zu,\"causal_bpb\":%.6f,\"masked_acc\":%.6f,\"params\":%zu}\n",
-                end_step, bpb, final_masked_acc, n_params);
+                "{\"event\":\"result\",\"steps\":%zu,\"dtype\":\"%s\",\"causal_bpb\":%.6f,\"masked_acc\":%.6f,"
+                "\"params\":%zu}\n",
+                end_step, dtype_name, bpb, final_masked_acc, n_params);
         fflush(metrics_fp);
         fclose(metrics_fp);
     }
