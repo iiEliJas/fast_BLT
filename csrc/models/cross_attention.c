@@ -15,6 +15,12 @@
 #include "ops/elementwise.h"
 #include "ops/mask_builder.h"
 
+static void check_cross_weight(const blt_tensor *w, size_t embed_dim, const char *name) {
+    BLT_REQUIRE(w != NULL && w->ndim == 2 && w->shape[0] == embed_dim && w->shape[1] == embed_dim,
+                "%s must be [embed_dim, embed_dim]", name);
+    BLT_REQUIRE(w->dtype == BLT_DTYPE_FP32 || w->dtype == BLT_DTYPE_BF16, "%s must be FP32 or BF16", name);
+}
+
 static void validate_cross_attention_call(const blt_tensor *query_in, const blt_tensor *kv_in,
                                           const blt_cross_attention_weights *weights,
                                           const blt_cross_attention_config *config, const blt_arena *arena,
@@ -36,14 +42,10 @@ static void validate_cross_attention_call(const blt_tensor *query_in, const blt_
                       "blt_cross_attention: kv_in must be [seq_len, embed_dim] FP32");
     size_t seq_len = kv_in->shape[0];
 
-    blt_check_nd_fp32(weights->weight_q, 2, (const size_t[]){embed_dim, embed_dim},
-                      "blt_cross_attention: weight_q must be [embed_dim, embed_dim] FP32");
-    blt_check_nd_fp32(weights->weight_k, 2, (const size_t[]){embed_dim, embed_dim},
-                      "blt_cross_attention: weight_k must be [embed_dim, embed_dim] FP32");
-    blt_check_nd_fp32(weights->weight_v, 2, (const size_t[]){embed_dim, embed_dim},
-                      "blt_cross_attention: weight_v must be [embed_dim, embed_dim] FP32");
-    blt_check_nd_fp32(weights->weight_proj, 2, (const size_t[]){embed_dim, embed_dim},
-                      "blt_cross_attention: weight_proj must be [embed_dim, embed_dim] FP32");
+    check_cross_weight(weights->weight_q, embed_dim, "blt_cross_attention: weight_q");
+    check_cross_weight(weights->weight_k, embed_dim, "blt_cross_attention: weight_k");
+    check_cross_weight(weights->weight_v, embed_dim, "blt_cross_attention: weight_v");
+    check_cross_weight(weights->weight_proj, embed_dim, "blt_cross_attention: weight_proj");
 
     size_t head_dim = (config->head_dim != 0) ? config->head_dim : (embed_dim / num_heads);
     BLT_REQUIRE(head_dim * num_heads == embed_dim, "blt_cross_attention: head_dim * num_heads must equal embed_dim");
@@ -233,14 +235,10 @@ void blt_cross_attention_backward(const blt_tensor *query_in, const blt_tensor *
                       "blt_cross_attention_backward: kv_in must be [seq_len, embed_dim] FP32");
     size_t seq_len = kv_in->shape[0];
 
-    blt_check_nd_fp32(weights->weight_q, 2, (const size_t[]){embed_dim, embed_dim},
-                      "blt_cross_attention_backward: weight_q must be [embed_dim, embed_dim] FP32");
-    blt_check_nd_fp32(weights->weight_k, 2, (const size_t[]){embed_dim, embed_dim},
-                      "blt_cross_attention_backward: weight_k must be [embed_dim, embed_dim] FP32");
-    blt_check_nd_fp32(weights->weight_v, 2, (const size_t[]){embed_dim, embed_dim},
-                      "blt_cross_attention_backward: weight_v must be [embed_dim, embed_dim] FP32");
-    blt_check_nd_fp32(weights->weight_proj, 2, (const size_t[]){embed_dim, embed_dim},
-                      "blt_cross_attention_backward: weight_proj must be [embed_dim, embed_dim] FP32");
+    check_cross_weight(weights->weight_q, embed_dim, "blt_cross_attention_backward: weight_q");
+    check_cross_weight(weights->weight_k, embed_dim, "blt_cross_attention_backward: weight_k");
+    check_cross_weight(weights->weight_v, embed_dim, "blt_cross_attention_backward: weight_v");
+    check_cross_weight(weights->weight_proj, embed_dim, "blt_cross_attention_backward: weight_proj");
 
     blt_check_nd_fp32(grad_out, 2, (const size_t[]){num_patches, embed_dim},
                       "blt_cross_attention_backward: grad_out must be [num_patches, embed_dim] FP32");

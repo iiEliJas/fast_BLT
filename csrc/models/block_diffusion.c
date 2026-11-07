@@ -335,7 +335,8 @@ static void forward_with_caches(const blt_local_decoder *model, const diff_ctx *
 
     for (size_t l = 0; l < c->L; l++) {
         const blt_local_decoder_layer_storage *s = &model->layers[l];
-        blt_transformer_weights w = blt_local_byte_weights_view(s);
+        const blt_local_layer_bf16 *bf = model->config.use_bf16 ? &model->layers_bf16[l] : NULL;
+        blt_transformer_weights w = blt_local_byte_weights_view_mixed(s, bf);
         diff_layer_cache *ca = &caches[l];
         ca->d_in = cur;
         size_t shape2[2] = {c->S, c->E};
@@ -344,7 +345,7 @@ static void forward_with_caches(const blt_local_decoder *model, const diff_ctx *
         if (blt_local_cross_attn_fires(model->config.cross_attn_placement, model->config.cross_attn_all_layers, c->L,
                                        l)) {
             ca->has_cross = true;
-            blt_cross_attention_weights xw = blt_local_cross_weights_view(s);
+            blt_cross_attention_weights xw = blt_local_cross_weights_view_mixed(s, bf);
 
             ca->normed_q = blt_tensor_create(arena, shape2, 2, BLT_DTYPE_FP32);
             blt_rmsnorm_forward(&cur, &s->cross_norm_weight, &ca->normed_q);
@@ -609,7 +610,8 @@ void blt_local_decoder_backward_diffusion(const blt_local_decoder *model, const 
 
     for (size_t li = c.L; li-- > 0;) {
         const blt_local_decoder_layer_storage *s = &model->layers[li];
-        blt_transformer_weights w = blt_local_byte_weights_view(s);
+        const blt_local_layer_bf16 *bf = model->config.use_bf16 ? &model->layers_bf16[li] : NULL;
+        blt_transformer_weights w = blt_local_byte_weights_view_mixed(s, bf);
         blt_local_decoder_layer_grad *lg = &grad->layer_grads[li];
         const diff_layer_cache *ca = &caches[li];
 
@@ -712,7 +714,7 @@ void blt_local_decoder_backward_diffusion(const blt_local_decoder *model, const 
 
         // ---------------- cross-attention backward ----------------
         if (ca->has_cross) {
-            blt_cross_attention_weights xw = blt_local_cross_weights_view(s);
+            blt_cross_attention_weights xw = blt_local_cross_weights_view_mixed(s, bf);
             blt_cross_attention_grad xg = {0};
             xg.grad_weight_q = lg->cross_weight_q;
             xg.grad_weight_k = lg->cross_weight_k;

@@ -397,11 +397,29 @@ void blt_transformer_stack_backward(const blt_transformer_stack *stack, const bl
     for (size_t i = 0; i < stack->num_layers; ++i) {
         size_t l = stack->num_layers - 1 - i; // walk layers in reverse
         blt_tensor grad_prev;
-        blt_transformer_layer_backward(cache->layers[l], &stack->layer_weights[l], call_cfg, arena, seq_len,
-                                       stack->embed_dim, stack->hidden_dim, &g, &grad->layer_grads[l], &grad_prev);
+        const blt_transformer_weights *w = &stack->layer_weights[l];
+        blt_transformer_weights bf16_w;
+        if (stack->use_bf16 && stack->layer_weights_bf16) {
+            bf16_w = bf16_weights_view(w, &stack->layer_weights_bf16[l]);
+            w = &bf16_w;
+        }
+        blt_transformer_layer_backward(cache->layers[l], w, call_cfg, arena, seq_len, stack->embed_dim,
+                                       stack->hidden_dim, &g, &grad->layer_grads[l], &grad_prev);
         g = grad_prev;
     }
     *grad_x = g;
+}
+
+void blt_transformer_stack_refresh_bf16(blt_transformer_stack *stack) {
+    if (!stack || !stack->use_bf16) return;
+    for (size_t l = 0; l < stack->num_layers; l++) {
+        blt_transformer_layer_storage *s = &stack->layer_storage[l];
+        blt_mixed_weight_refresh(&s->attn_qkv_w_bf16, &s->attn_qkv_w);
+        blt_mixed_weight_refresh(&s->attn_proj_w_bf16, &s->attn_proj_w);
+        blt_mixed_weight_refresh(&s->ffn_up_w_bf16, &s->ffn_up_w);
+        blt_mixed_weight_refresh(&s->ffn_gate_w_bf16, &s->ffn_gate_w);
+        blt_mixed_weight_refresh(&s->ffn_down_w_bf16, &s->ffn_down_w);
+    }
 }
 
 void blt_transformer_stack_refresh_fp8(blt_transformer_stack *stack) {

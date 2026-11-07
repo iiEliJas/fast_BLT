@@ -53,6 +53,25 @@ void blt_local_layer_storage_alloc(blt_arena *arena, blt_local_layer_storage *s,
 
 void blt_local_layer_grad_alloc(blt_arena *arena, blt_local_layer_grad *g, size_t embed_dim, size_t hidden_dim);
 
+// BF16 shadows of the matmul-participating weights in blt_local_layer_storage.
+// Norm weights stay FP32; these copies exist only to feed mixed-precision
+// matmuls and are refreshed from the FP32 masters each step.
+typedef struct {
+    blt_tensor attn_qkv_w;     // [embed_dim, 3*embed_dim]
+    blt_tensor attn_proj_w;    // [embed_dim, embed_dim]
+    blt_tensor ffn_up_w;       // [embed_dim, hidden_dim]
+    blt_tensor ffn_gate_w;     // [embed_dim, hidden_dim]
+    blt_tensor ffn_down_w;     // [hidden_dim, embed_dim]
+    blt_tensor cross_weight_q; // [embed_dim, embed_dim]
+    blt_tensor cross_weight_k;
+    blt_tensor cross_weight_v;
+    blt_tensor cross_weight_proj;
+} blt_local_layer_bf16;
+
+void blt_local_layer_bf16_alloc(blt_arena *arena, blt_local_layer_bf16 *b, size_t embed_dim, size_t hidden_dim);
+
+void blt_local_layer_bf16_refresh(blt_local_layer_bf16 *b, const blt_local_layer_storage *s);
+
 // Cross-attention placement modes for ablation sweeps.
 // DEFAULT keeps legacy bool behavior of cross_attn_all_layers;
 // explicit modes override it. FIRST is only meaningful for the decoder.
@@ -74,6 +93,13 @@ bool blt_local_cross_attn_fires(blt_xattn_placement placement, bool cross_attn_a
 blt_transformer_weights blt_local_byte_weights_view(const blt_local_layer_storage *s);
 blt_cross_attention_weights blt_local_cross_weights_view(const blt_local_layer_storage *s);
 blt_transformer_layer_grad blt_local_byte_grad_view(blt_local_layer_grad *lg);
+
+// Same views, with the matmul weights overridden by their BF16 shadows when
+// b is non-NULL. Norm weights always point at the FP32 masters.
+blt_transformer_weights blt_local_byte_weights_view_mixed(const blt_local_layer_storage *s,
+                                                          const blt_local_layer_bf16 *b);
+blt_cross_attention_weights blt_local_cross_weights_view_mixed(const blt_local_layer_storage *s,
+                                                               const blt_local_layer_bf16 *b);
 
 // Builds the byte-transformer-layer config: RMSNorm + SwiGLU + causal
 // RoPE'd self-attention over local_mask.
