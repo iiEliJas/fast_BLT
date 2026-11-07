@@ -396,7 +396,9 @@ so raw GEMM throughput does not translate into a proportional step-time win. The
 rejects `--dtype bf16`.
 
 Loss parity over 300 steps (same seed and window order, E=64/H=128/2 layers, `data/train.bin`):
-the FP32 and BF16 loss curves tracked each other within 0.1 and neither produced NaN/Inf.
+mean absolute per-step loss difference 0.18 (max 2.44 on losses in 203-903), no NaN/Inf.
+
+Full design, per-phase numbers, meso results, and limitations: [E010](experiments/E010_bf16_mixed_precision.md).
 
 ## Device table and MFU/MBU
 
