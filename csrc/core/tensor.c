@@ -42,6 +42,7 @@ void view_1d(blt_tensor *view, void *data, size_t len, blt_dtype dtype, blt_back
     view->dtype = dtype;
     view->backend = backend;
     view->is_view = true;
+    view->scale = NULL;
 }
 
 void view_1d_offset(blt_tensor *view, const blt_tensor *src, size_t offset_elems, size_t len) {
@@ -59,6 +60,7 @@ void blt_tensor_view_2d(blt_tensor *t, void *data, size_t rows, size_t cols, blt
     t->dtype = BLT_DTYPE_FP32;
     t->backend = backend;
     t->is_view = true;
+    t->scale = NULL;
     blt_tensor_compute_row_major_strides(t->shape, 2, t->strides);
 }
 
@@ -73,6 +75,7 @@ void blt_tensor_view_3d(blt_tensor *t, void *data, size_t d0, size_t d1, size_t 
     t->dtype = BLT_DTYPE_FP32;
     t->backend = backend;
     t->is_view = true;
+    t->scale = NULL;
     blt_tensor_compute_row_major_strides(t->shape, 3, t->strides);
 }
 

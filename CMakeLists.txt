@@ -64,6 +64,7 @@ set(BLT_CORE_SOURCES
   csrc/ops/gather_scatter_cpu.c
   csrc/ops/row_stats_cpu.c
   csrc/ops/cast_cpu.c
+  csrc/ops/quant_cpu.c
   csrc/models/entropy.c
   csrc/models/byte_embedding.c
   csrc/models/patcher.c
@@ -113,6 +114,7 @@ if(USE_CUDA)
     csrc/ops/gather_scatter.cu
     csrc/ops/row_stats.cu
     csrc/ops/cast_cuda.cu
+    csrc/ops/quant_cuda.cu
   )
 endif()
 

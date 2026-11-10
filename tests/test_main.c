@@ -34,6 +34,7 @@ int main(void) {
         {"optimizer backend", run_optim_backend_tests},
         {"mask builder backend", run_mask_builder_backend_tests},
         {"bf16 cast", run_bf16_cast_tests},
+        {"fp8/fp16 quant", run_quant_tests},
         {"deterministic regression", run_deterministic_regression_test},
         {"topk from logits", run_topk_from_logits_tests},
         {"train window order", run_train_window_order_tests},

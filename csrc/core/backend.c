@@ -16,6 +16,7 @@
 #include "ops/gather_scatter.h"
 #include "ops/row_stats.h"
 #include "ops/cast.h"
+#include "ops/quant.h"
 #include "core/tensor.h"
 #include "core/cuda_shim.h"
 
@@ -79,6 +80,12 @@ void blt_entropy_rows_cpu(const blt_tensor *probs, blt_tensor *entropy_out, int 
 void blt_argmax_rows_cpu(const blt_tensor *logits, uint32_t *out_ids_host);
 
 void blt_cast_cpu(const blt_tensor *in, blt_tensor *out);
+
+void blt_amax_cpu(const blt_tensor *x, blt_tensor *out);
+void blt_quant_scale_cpu(const blt_tensor *amax_in, float max_value, float min_scale, blt_tensor *scale_out);
+void blt_fp8_quantize_cpu(const blt_tensor *x, const blt_tensor *scale, blt_tensor *out, int transpose);
+void blt_fp8_dequantize_cpu(const blt_tensor *x, const blt_tensor *scale, blt_tensor *out, int transpose);
+void blt_fp8_roundtrip_cpu(const blt_tensor *x, const blt_tensor *scale, blt_tensor *out);
 
 void blt_softmax_cpu(const blt_tensor *in, blt_tensor *out);
 void blt_softmax_backward_cpu(const blt_tensor *grad_out, const blt_tensor *softmax_out, blt_tensor *grad_in);
@@ -213,6 +220,12 @@ void blt_entropy_rows_cuda(const blt_tensor *probs, blt_tensor *entropy_out, int
 void blt_argmax_rows_cuda(const blt_tensor *logits, uint32_t *out_ids_host);
 
 void blt_cast_cuda(const blt_tensor *in, blt_tensor *out);
+
+void blt_amax_cuda(const blt_tensor *x, blt_tensor *out);
+void blt_quant_scale_cuda(const blt_tensor *amax_in, float max_value, float min_scale, blt_tensor *scale_out);
+void blt_fp8_quantize_cuda(const blt_tensor *x, const blt_tensor *scale, blt_tensor *out, int transpose);
+void blt_fp8_dequantize_cuda(const blt_tensor *x, const blt_tensor *scale, blt_tensor *out, int transpose);
+void blt_fp8_roundtrip_cuda(const blt_tensor *x, const blt_tensor *scale, blt_tensor *out);
 #else
 #define BLT_DISPATCH(tensor, cpu_call, cuda_call)                                                                      \
     do {                                                                                                               \
@@ -548,6 +561,28 @@ void blt_argmax_rows(const blt_tensor *logits, uint32_t *out_ids_host) {
 
 void blt_cast(const blt_tensor *in, blt_tensor *out) {
     BLT_DISPATCH(in, blt_cast_cpu(in, out), blt_cast_cuda(in, out));
+}
+
+// QUANTIZATION
+
+void blt_amax(const blt_tensor *x, blt_tensor *out) { BLT_DISPATCH(x, blt_amax_cpu(x, out), blt_amax_cuda(x, out)); }
+
+void blt_quant_scale(const blt_tensor *amax_in, float max_value, float min_scale, blt_tensor *scale_out) {
+    BLT_DISPATCH(amax_in, blt_quant_scale_cpu(amax_in, max_value, min_scale, scale_out),
+                 blt_quant_scale_cuda(amax_in, max_value, min_scale, scale_out));
+}
+
+void blt_fp8_quantize(const blt_tensor *x, const blt_tensor *scale, blt_tensor *out, int transpose) {
+    BLT_DISPATCH(x, blt_fp8_quantize_cpu(x, scale, out, transpose), blt_fp8_quantize_cuda(x, scale, out, transpose));
+}
+
+void blt_fp8_dequantize(const blt_tensor *x, const blt_tensor *scale, blt_tensor *out, int transpose) {
+    BLT_DISPATCH(x, blt_fp8_dequantize_cpu(x, scale, out, transpose),
+                 blt_fp8_dequantize_cuda(x, scale, out, transpose));
+}
+
+void blt_fp8_roundtrip(const blt_tensor *x, const blt_tensor *scale, blt_tensor *out) {
+    BLT_DISPATCH(x, blt_fp8_roundtrip_cpu(x, scale, out), blt_fp8_roundtrip_cuda(x, scale, out));
 }
 
 // PASS SYNC

@@ -85,6 +85,7 @@ int run_local_decoder_overfit(void);
 int run_blt_model_overfit(void);
 
 int run_bf16_cast_tests(void);
+int run_quant_tests(void);
 int run_deterministic_regression_test(void);
 int run_topk_from_logits_tests(void);
 int run_train_window_order_tests(void);

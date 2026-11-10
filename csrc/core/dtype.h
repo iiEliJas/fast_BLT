@@ -13,7 +13,9 @@ typedef enum {
     BLT_DTYPE_BF16 = 1,
     BLT_DTYPE_INT32 = 2,
     BLT_DTYPE_UINT8 = 3,
-    BLT_DTYPE_FP8_E4M3 = 4
+    BLT_DTYPE_FP8_E4M3 = 4,
+    BLT_DTYPE_FP16 = 5,
+    BLT_DTYPE_FP8_E5M2 = 6
 } blt_dtype;
 
 static inline size_t blt_dtype_sizeof(blt_dtype dtype) {
@@ -28,10 +30,24 @@ static inline size_t blt_dtype_sizeof(blt_dtype dtype) {
         return 1;
     case BLT_DTYPE_FP8_E4M3:
         return 1;
+    case BLT_DTYPE_FP16:
+        return 2;
+    case BLT_DTYPE_FP8_E5M2:
+        return 1;
     default:
         return 0;
     }
 }
+
+static inline int blt_dtype_is_fp8(blt_dtype dtype) {
+    return dtype == BLT_DTYPE_FP8_E4M3 || dtype == BLT_DTYPE_FP8_E5M2;
+}
+
+static inline int blt_dtype_is_fp16(blt_dtype dtype) { return dtype == BLT_DTYPE_BF16 || dtype == BLT_DTYPE_FP16; }
+
+// Largest finite magnitude representable by an FP8 encoding. Used to derive
+// the per-tensor scale (amax / max_value).
+static inline float blt_fp8_max(blt_dtype dtype) { return dtype == BLT_DTYPE_FP8_E5M2 ? 57344.0f : 448.0f; }
 
 #ifdef __cplusplus
 }
