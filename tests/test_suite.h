@@ -62,6 +62,7 @@ int run_block_diffusion_draft_trailing_closed(void);
 int run_bf16_refresh_tests(void);
 int run_bf16_mixed_matmul(void);
 int run_bf16_integration_tests(void);
+int run_grad_accum_tests(void);
 
 int run_matmul_parity_test(void);
 int run_softmax_parity_test(void);

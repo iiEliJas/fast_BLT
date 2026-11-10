@@ -146,6 +146,11 @@ If a long-window run dies with `arena allocation exceeded capacity`, that is thi
 Inference has no window: it segments the prompt as it grows. A model trained with a long window
 works with a prompt of any length up to the sequence bound, which is derived from the prompt and
 `--new-bytes` and can be overridden with `--max-seq-len`.
+
+### Shape and schedule
+
+| Flag | Default | Description |
+|------|---------|-------------|
 | `--embed E` | 64 | Model width |
 | `--hidden H` | 128 | FFN width |
 | `--layers L` | 2 | Layers per submodule (encoder/global/decoder) |
@@ -221,6 +226,34 @@ order and the diffusion timestep sequence.
 SGD uses vanilla gradient descent. AdamW uses the standard PyTorch-compatible algorithm
 (bias-corrected m/v). Both clip to `--max-norm`: the global norm is computed once per step, then
 the clip factor is applied inside the optimizer kernel rather than as a separate gradient pass.
+
+### Gradient accumulation
+
+`--grad-accum N` (default 1) averages the gradients of `N` consecutive training windows
+(micro-batches) before each optimizer update. The windows are the next `N` entries of the
+deterministic window order, so `--grad-accum 2 --steps 10` consumes the same 20 windows as
+`--grad-accum 1 --steps 20`; only the update boundaries differ.
+
+- The gradient fed to clipping and the optimizer is the mean, `sum / micros_done`, not the sum.
+- `--lr`, `--max-norm`, the LR schedule, and the optimizer state advance once per optimizer step.
+  `--start-step` and `--steps` count optimizer steps, not micro-batches.
+- Epoch accounting, `--loss-log`, metrics JSONL, and the periodic `step ... epoch e/E` line are
+  per optimizer step. `--loss-log` writes one line per step containing the mean loss of that
+  step's micro-batches.
+- `B/s` and TFLOP/s account for all `N` micro-batches.
+- A micro-batch that hits the `BLT_MAX_PATCHES` cap is skipped. The divisor is the number of
+  micro-batches actually accumulated, and a step with none aborts with an error.
+- `--grad-accum 1` is bit-identical to omitting the flag and allocates no accumulation buffer.
+  `N > 1` allocates a second full gradient buffer from the model arena, so raise `--model-mb` if
+  a configuration already fits exactly at `N = 1`. The startup line prints `grad_accum=`.
+- `--grad-accum 0` is rejected at startup.
+
+```bash
+build/train_blt_d --corpus data/train.bin --steps 2000 --grad-accum 4 \
+  --embed 184 --hidden 432 --layers 6 --lr 3e-4
+```
+
+`configs/train/production_grad_accum.yaml` is a ready-to-run four-way accumulation config.
 
 ### Mode Selection
 
@@ -392,7 +425,7 @@ enabling either. Measurements and rationale: `docs/experiments/E002_loss_normali
 | `--component-norm-log FILE` | (none) | Write per-component gradient norms per step |
 | `--activation-dump-log FILE` | (none) | Log activation stats every report-every steps |
 | `--batch-log FILE` | (none) | Log batch properties per step |
-| `--loss-log FILE` | (none) | Write per-step loss |
+| `--loss-log FILE` | (none) | Per-optimizer-step loss (micro-batch average) |
 
 ---
 

@@ -84,6 +84,11 @@ jobs:
             --window 128 --block-size 8 --windows 128 --patcher fixed \
             --layout novel --t 1.0 --guard
 
+      - name: Gradient accumulation CLI tests
+        run: |
+          pip install pytest
+          pytest tests/py/test_grad_accum_cli.py -q
+
       - name: Clean build artifacts
         if: always()
         run: rm -rf build

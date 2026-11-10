@@ -275,7 +275,7 @@ The wrapper is recommended for normal use because it manages run directories and
 | `--lr-schedule step\|cosine` | Schedule after warmup |
 | `--weight-decay F` | AdamW decoupled weight decay |
 | `--max-norm F` | Global gradient-norm clip |
-| `--grad-accum N` | Accumulate N windows per optimizer step (roadmap item) |
+| `--grad-accum N` | Average N windows into one optimizer step (see CLI_REFERENCE.md) |
 | `--bf16` | BF16 mixed precision on CUDA (roadmap item) |
 | `--diffusion 0\|1` | Plain causal BLT or BLT-D |
 | `--window N` | Clean sequence length |

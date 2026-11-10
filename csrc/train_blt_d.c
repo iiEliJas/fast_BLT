@@ -313,6 +313,10 @@ static void refresh_fp8_weights(const blt_model *model) {
 
 int main(int argc, char **argv) {
     args_t a = parse_args(argc, argv);
+    if (a.grad_accum < 1) {
+        fprintf(stderr, "--grad-accum must be >= 1\n");
+        return 1;
+    }
 
     // Load corpus
     FILE *fp = fopen(a.corpus_path, "rb");
@@ -488,14 +492,21 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (a.grad_accum < 1) {
-        fprintf(stderr, "--grad-accum must be >= 1\n");
-        return 1;
-    }
     blt_model_grad *grad = blt_model_grad_create(model_arena, model);
     // The accumulation buffer doubles gradient memory; only the multi-micro
-    // path needs it.
-    blt_model_grad *grad_accum = (a.grad_accum > 1) ? blt_model_grad_create(model_arena, model) : NULL;
+    // path needs it. Preflight the arena so an oversized second buffer names
+    // the flag and the shortfall instead of failing inside the allocator.
+    blt_model_grad *grad_accum = NULL;
+    if (a.grad_accum > 1) {
+        const size_t grad_bytes = blt_param_bytes(model);
+        const size_t free_bytes = model_arena->capacity - model_arena->offset;
+        BLT_REQUIRE(free_bytes >= grad_bytes,
+                    "train_blt_d: --grad-accum %zu needs a second gradient buffer (%.1f MB) but only "
+                    "%.1f MB remains in the model arena; raise --model-mb",
+                    a.grad_accum, (double)grad_bytes / (1024.0 * 1024.0), (double)free_bytes / (1024.0 * 1024.0));
+        grad_accum = blt_model_grad_create(model_arena, model);
+    }
+    blt_model_grad *step_grad = (a.grad_accum > 1) ? grad_accum : grad;
     blt_entropy_lm *train_lm = a.entropy_patches ? blt_make_entropy_lm(host_lm_arena, MS, NULL, 11) : NULL;
     if (train_lm && a.entropy_lm) {
         blt_entropy_lm_load(train_lm, a.entropy_lm);
@@ -659,11 +670,11 @@ int main(int argc, char **argv) {
     refresh_fp8_weights(model);
 
     const size_t n_params = blt_count_params(model);
-    printf("train_blt_d: mode=%s corpus=%s (%ld bytes) steps=%zu lr=%.4g B=%zu W=%zu "
+    printf("train_blt_d: mode=%s corpus=%s (%ld bytes) steps=%zu grad_accum=%zu lr=%.4g B=%zu W=%zu "
            "embed=%zu hidden=%zu enc/glob/dec layers=%zu/%zu/%zu xattn=%s backend=%s dtype=%s d0=%s"
            " optimizer=%s params=%zu (%.3fM)\n",
-           a.diffusion ? "BLT-D" : "PLAIN-BLT", a.corpus_path, fsize, a.steps, (double)a.lr, a.block_size, a.window,
-           a.embed, a.hidden, a.enc_layers, a.glob_layers, a.dec_layers, a.cross_last ? "last" : "all",
+           a.diffusion ? "BLT-D" : "PLAIN-BLT", a.corpus_path, fsize, a.steps, a.grad_accum, (double)a.lr, a.block_size,
+           a.window, a.embed, a.hidden, a.enc_layers, a.glob_layers, a.dec_layers, a.cross_last ? "last" : "all",
            a.use_cuda ? "cuda" : "cpu", dtype_name, a.d0_learned ? "learned" : "zeros", a.optimizer ? "adamw" : "sgd",
            n_params, (double)n_params / 1e6);
 
@@ -690,7 +701,8 @@ int main(int argc, char **argv) {
     BLT_REQUIRE(a.save_best_path == NULL || a.eval_path != NULL, "train_blt_d: --save-best requires --eval-corpus");
     BLT_REQUIRE(a.save_best_path == NULL || a.eval_every > 0, "train_blt_d: --save-best requires --eval-every > 0");
 
-    size_t total_epochs = (a.start_step + a.steps + num_windows - 1) / num_windows;
+    const size_t total_windows = (a.start_step + a.steps) * a.grad_accum;
+    size_t total_epochs = (total_windows + num_windows - 1) / num_windows;
     printf("train_blt_d: %zu windows (~%zu epochs)\n", num_windows, total_epochs);
 
     adamw_state *aw = NULL;
@@ -762,6 +774,7 @@ int main(int argc, char **argv) {
         if (timing) ts0 = blt_time_sec();
         if (a.grad_accum > 1) blt_model_grad_zero(model, grad_accum);
         double step_loss = 0.0;
+        size_t micros_done = 0;
         for (size_t micro = 0; micro < a.grad_accum; micro++) {
             const size_t data_step = step * a.grad_accum + micro;
             blt_arena_reset(scratch);
@@ -778,7 +791,6 @@ int main(int argc, char **argv) {
                                          entropy_segment(host_seg_arena, train_lm, text, N, patches, BLT_MAX_PATCHES))
                                       : fixed_stride(N, 4, patches);
             BLT_REQUIRE(M >= 2, "training window produced < 2 patches");
-            if (M < 2) continue;
             if (M >= BLT_MAX_PATCHES) continue;
 
             blt_block_batch batch;
@@ -860,14 +872,11 @@ int main(int argc, char **argv) {
 
                 float lv;
                 blt_tensor_download(&loss, &lv, sizeof(float));
-                if (loss_fp && ((step + 1) % a.report_every == 0 || step + 1 == end_step))
-                    fprintf(loss_fp, "%zu %.6f\n", step + 1, (double)lv);
                 if (timing) {
                     tsB = blt_time_sec();
                     t_fwd += tsB - tsA;
                 }
                 step_loss += lv;
-                last_loss = lv;
                 patch_sum += M;
                 patch_n++;
 
@@ -902,10 +911,7 @@ int main(int argc, char **argv) {
 
                 float lv;
                 blt_tensor_download(&loss, &lv, sizeof(float));
-                if (loss_fp && ((step + 1) % a.report_every == 0 || step + 1 == end_step))
-                    fprintf(loss_fp, "%zu %.6f\n", step + 1, (double)lv);
                 step_loss += lv;
-                last_loss = lv;
                 patch_sum += M;
                 patch_n++;
 
@@ -916,24 +922,26 @@ int main(int argc, char **argv) {
             }
 
             if (a.grad_accum > 1) blt_model_grad_add(model, grad_accum, grad);
+            micros_done++;
         }
+        BLT_REQUIRE(micros_done > 0, "train_blt_d: no usable micro-batch in gradient accumulation");
+        if (a.grad_accum > 1) blt_model_grad_scale(model, grad_accum, 1.0f / (float)micros_done);
 
-        if (a.grad_accum > 1) {
-            blt_model_grad_zero(model, grad);
-            blt_model_grad_add(model, grad, grad_accum);
-            blt_model_grad_scale(model, grad, 1.0f / (float)a.grad_accum);
+        last_loss = step_loss / (double)micros_done;
+        if (loss_fp) {
+            fprintf(loss_fp, "%zu %.6f\n", step + 1, last_loss);
+            fflush(loss_fp);
         }
-
-        running += step_loss / (double)a.grad_accum;
+        running += last_loss;
         running_n++;
 
         float lr = train_lr_at_step(&a, step, end_step);
 
         if (timing) tsC = blt_time_sec();
         if (cnorm_fp && ((step + 1) % a.report_every == 0 || step + 1 == end_step))
-            log_component_norms(cnorm_fp, step + 1, model, grad);
+            log_component_norms(cnorm_fp, step + 1, model, step_grad);
         float clip_scale = 1.0f;
-        float pre_clip_norm = blt_grad_clip_norm(model, grad, a.max_norm, &clip_scale);
+        float pre_clip_norm = blt_grad_clip_norm(model, step_grad, a.max_norm, &clip_scale);
         if (gnorm_fp && ((step + 1) % a.report_every == 0 || step + 1 == end_step))
             fprintf(gnorm_fp, "%zu %.6f\n", step + 1, pre_clip_norm);
         if (unorm_fp && pre_clip_norm > 100.0f) {
@@ -947,7 +955,7 @@ int main(int argc, char **argv) {
                                          .weight_decay = a.weight_decay,
                                          .weight_decay_norms = a.weight_decay_norms,
                                          .step = 0};
-                u_norm = adamw_update_norm(model, grad, aw, &ucfg, clip_scale);
+                u_norm = adamw_update_norm(model, step_grad, aw, &ucfg, clip_scale);
             } else {
                 u_norm = lr * post_clip;
             }
@@ -962,9 +970,9 @@ int main(int argc, char **argv) {
                                     .weight_decay = a.weight_decay,
                                     .weight_decay_norms = a.weight_decay_norms,
                                     .step = 0};
-            adamw_all(model, grad, aw, &cfg, clip_scale);
+            adamw_all(model, step_grad, aw, &cfg, clip_scale);
         } else {
-            sgd_all(model, grad, lr, clip_scale);
+            sgd_all(model, step_grad, lr, clip_scale);
         }
         // The optimizer mutated the FP32 masters; rebuild every low-precision
         // shadow so the next forward (report, monitor, eval) reads current weights.
@@ -1040,7 +1048,7 @@ int main(int argc, char **argv) {
         }
 
         if ((step + 1) % a.report_every == 0 || step + 1 == end_step) {
-            size_t epoch = step / num_windows;
+            size_t epoch = (step + 1) * a.grad_accum / num_windows;
             double now = blt_time_sec();
             const double remaining = blt_eta_update(&eta, step, end_step, now - last_t, excl_s);
             last_t = now;
@@ -1048,9 +1056,10 @@ int main(int argc, char **argv) {
             size_t rem_h = (size_t)remaining / 3600;
             size_t rem_m = ((size_t)remaining % 3600) / 60;
             const double steps_done = (double)((step + 1) - report_step0);
+            const double windows_done = steps_done * (double)a.grad_accum;
             const double dt = now - report_t0;
             const double ms_per_step = (steps_done > 0) ? 1000.0 * dt / steps_done : 0.0;
-            const double bytes_per_s = (dt > 0) ? (double)(steps_done * a.window) / dt : 0.0;
+            const double bytes_per_s = (dt > 0) ? windows_done * (double)a.window / dt : 0.0;
             const double avg_patch = patch_n ? (double)patch_sum / (double)patch_n : 4.0;
             double tflops = 0.0;
             int have_tflops = 0;
@@ -1083,7 +1092,7 @@ int main(int argc, char **argv) {
                 fc.vocab_size = 256;
                 double fpb = blt_flops_per_byte(&fc);
                 if (isfinite(fpb) && fpb > 0) {
-                    const double flops_per_step = 3.0 * fpb * (double)a.window;
+                    const double flops_per_step = 3.0 * fpb * (double)a.window * (double)a.grad_accum;
                     tflops = flops_per_step / (dt / steps_done) / 1e12;
                     have_tflops = isfinite(tflops);
                 }

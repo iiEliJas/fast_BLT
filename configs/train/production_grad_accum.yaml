@@ -1,0 +1,27 @@
+# 2.97M-parameter BLT-D training with 4-way gradient accumulation.
+# The corpus must point to your own full training data (not included in repo).
+#
+# Each optimizer step averages four windows, so `steps` counts optimizer
+# updates: 10000 steps x 4 windows = 40000 windows, the same data budget as
+# configs/train/production.yaml. N > 1 allocates a second full gradient buffer
+# from the model arena; raise --model-mb if a configuration fits exactly at
+# N = 1. See docs/CLI_REFERENCE.md for the accumulation semantics.
+corpus: data/corpus.bin
+embed: 192
+hidden: 384
+layers: 2
+steps: 10000
+grad-accum: 4
+optimizer: adamw
+lr: 0.0001
+lr-decay: 1
+paper-loss: 1
+mask-scale: 1.0
+max-norm: 20000
+diffusion: 1
+block-size: 4
+window: 48
+t-min: 0.1
+t-warmup-hi: 0.25
+t-hi-start: 0.8
+cross-attn: all

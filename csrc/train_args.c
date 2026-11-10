@@ -19,6 +19,8 @@ static void usage(void) {
                     "  --eps F                 AdamW epsilon (default 1e-8)\n"
                     "  --weight-decay F        AdamW weight decay (default 0.01)\n"
                     "  --max-norm F            gradient clip threshold (default 20000)\n"
+                    "  --grad-accum N          gradient accumulation steps: N micro-batches are averaged\n"
+                    "                          per optimizer step (default 1)\n"
                     "  --seed S                RNG seed (default 7)\n"
                     "  --backend cpu|cuda      backend (default cpu)\n"
                     "  --dtype fp32|bf16       weight/activation precision (default fp32); --bf16 is an alias\n"
@@ -45,7 +47,6 @@ static void usage(void) {
                     "  --t-hi-start F          high-t curriculum start floor (default 0.8)\n"
                     "  --block-size B          diffusion block size (default 4)\n"
                     "  --window W              clean-sequence length (default 48)\n"
-                    "  --grad-accum N          gradient accumulation steps (default 1)\n"
                     "\n"
                     "mask schedule:\n"
                     "  --mask-warmup N         ramp mask scale 0->1 over N steps (default 0)\n"
@@ -90,7 +91,7 @@ static void usage(void) {
                     "  --component-norm-log FILE   per-component gradient norms per step\n"
                     "  --activation-dump-log FILE  activation stats every report-every steps\n"
                     "  --batch-log FILE            batch properties per step\n"
-                    "  --loss-log FILE             per-step loss\n");
+                    "  --loss-log FILE             per-optimizer-step loss (micro-batch average)\n");
     exit(1);
 }
 

@@ -90,6 +90,7 @@ int main(void) {
         {"bf16 refresh", run_bf16_refresh_tests},
         {"bf16 mixed matmul", run_bf16_mixed_matmul},
         {"bf16 fp32 integration", run_bf16_integration_tests},
+        {"gradient accumulation", run_grad_accum_tests},
     };
 
     const test_case parity_tests[] = {
