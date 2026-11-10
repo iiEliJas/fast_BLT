@@ -155,6 +155,7 @@ def run_training(cfg):
     _acc = max(1, int(_cfg(cfg, "grad_accum", 1)))
     for step in range(start_step, end_step):
         opt.zero_grad(set_to_none=True)
+        step_loss = 0.0
         for _micro in range(_acc):
             _ms = step * _acc + _micro
             w = train_window_index(_ms, num_windows, seed)
@@ -238,6 +239,7 @@ def run_training(cfg):
                     targets = torch.tensor(text[1:] + [0], dtype=torch.long)[: logits.shape[0]]
                     loss = torch.nn.functional.cross_entropy(logits, targets)
             (loss / _acc).backward()
+            step_loss += float(loss.detach().item())
         # grad clip
         max_norm = _cfg(cfg, "max_norm", 20000.0)
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
@@ -251,7 +253,7 @@ def run_training(cfg):
                     {
                         "event": "train",
                         "step": step,
-                        "loss": float(loss.item()),
+                        "loss": step_loss / _acc,
                         "lr": float(opt.param_groups[0]["lr"]),
                         "grad_norm": float(grad_norm),
                     }
@@ -261,7 +263,8 @@ def run_training(cfg):
             metrics_fh.flush()
         if _cfg(cfg, "report_every", 25) and (step % _cfg(cfg, "report_every", 25) == 0):
             print(
-                f"step {step}/{end_step} loss {loss.item():.4f} lr {opt.param_groups[0]['lr']:.6g}"
+                f"step {step}/{end_step} loss {step_loss / _acc:.4f} "
+                f"lr {opt.param_groups[0]['lr']:.6g}"
             )
         # save
         save_path = _cfg(cfg, "save_weights", None)
