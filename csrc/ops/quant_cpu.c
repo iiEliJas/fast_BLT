@@ -107,16 +107,33 @@ void blt_fp8_dequantize_cpu(const blt_tensor *x, const blt_tensor *scale, blt_te
     }
 }
 
-void blt_fp8_roundtrip_cpu(const blt_tensor *x, const blt_tensor *scale, blt_tensor *out) {
+void blt_fp8_roundtrip_cpu(const blt_tensor *x, const blt_tensor *scale, blt_dtype fmt, blt_tensor *out) {
     BLT_REQUIRE(x != NULL && out != NULL, "blt_fp8_roundtrip: x and out must not be NULL");
     BLT_REQUIRE(x->numel == out->numel, "blt_fp8_roundtrip: x and out must have the same numel");
+    BLT_REQUIRE(blt_dtype_is_fp8(fmt), "blt_fp8_roundtrip: fmt must be an FP8 dtype");
 
     const float s = scale_value(scale);
     const float inv = 1.0f / s;
     const float *src = (const float *)x->data;
     float *dst = (float *)out->data;
     for (size_t i = 0; i < x->numel; ++i) {
-        dst[i] = from_fp8(out->dtype, to_fp8(out->dtype, src[i] * inv)) * s;
+        dst[i] = from_fp8(fmt, to_fp8(fmt, src[i] * inv)) * s;
+    }
+}
+
+void blt_fp8_transpose_cpu(const blt_tensor *src, blt_tensor *dst) {
+    BLT_REQUIRE(src != NULL && dst != NULL, "blt_fp8_transpose: src and dst must not be NULL");
+    BLT_REQUIRE(blt_dtype_is_fp8(src->dtype) && src->dtype == dst->dtype,
+                "blt_fp8_transpose: src and dst must share an FP8 dtype");
+    const size_t rows = src->shape[0];
+    const size_t cols = src->shape[1];
+    BLT_REQUIRE(dst->shape[0] == cols && dst->shape[1] == rows, "blt_fp8_transpose: dst shape must be src^T");
+    const uint8_t *s = (const uint8_t *)src->data;
+    uint8_t *d = (uint8_t *)dst->data;
+    for (size_t r = 0; r < rows; ++r) {
+        for (size_t c = 0; c < cols; ++c) {
+            d[c * rows + r] = s[r * cols + c];
+        }
     }
 }
 

@@ -85,7 +85,8 @@ void blt_amax_cpu(const blt_tensor *x, blt_tensor *out);
 void blt_quant_scale_cpu(const blt_tensor *amax_in, float max_value, float min_scale, blt_tensor *scale_out);
 void blt_fp8_quantize_cpu(const blt_tensor *x, const blt_tensor *scale, blt_tensor *out, int transpose);
 void blt_fp8_dequantize_cpu(const blt_tensor *x, const blt_tensor *scale, blt_tensor *out, int transpose);
-void blt_fp8_roundtrip_cpu(const blt_tensor *x, const blt_tensor *scale, blt_tensor *out);
+void blt_fp8_roundtrip_cpu(const blt_tensor *x, const blt_tensor *scale, blt_dtype fmt, blt_tensor *out);
+void blt_fp8_transpose_cpu(const blt_tensor *src, blt_tensor *dst);
 
 void blt_softmax_cpu(const blt_tensor *in, blt_tensor *out);
 void blt_softmax_backward_cpu(const blt_tensor *grad_out, const blt_tensor *softmax_out, blt_tensor *grad_in);
@@ -225,7 +226,8 @@ void blt_amax_cuda(const blt_tensor *x, blt_tensor *out);
 void blt_quant_scale_cuda(const blt_tensor *amax_in, float max_value, float min_scale, blt_tensor *scale_out);
 void blt_fp8_quantize_cuda(const blt_tensor *x, const blt_tensor *scale, blt_tensor *out, int transpose);
 void blt_fp8_dequantize_cuda(const blt_tensor *x, const blt_tensor *scale, blt_tensor *out, int transpose);
-void blt_fp8_roundtrip_cuda(const blt_tensor *x, const blt_tensor *scale, blt_tensor *out);
+void blt_fp8_roundtrip_cuda(const blt_tensor *x, const blt_tensor *scale, blt_dtype fmt, blt_tensor *out);
+void blt_fp8_transpose_cuda(const blt_tensor *src, blt_tensor *dst);
 #else
 #define BLT_DISPATCH(tensor, cpu_call, cuda_call)                                                                      \
     do {                                                                                                               \
@@ -581,8 +583,12 @@ void blt_fp8_dequantize(const blt_tensor *x, const blt_tensor *scale, blt_tensor
                  blt_fp8_dequantize_cuda(x, scale, out, transpose));
 }
 
-void blt_fp8_roundtrip(const blt_tensor *x, const blt_tensor *scale, blt_tensor *out) {
-    BLT_DISPATCH(x, blt_fp8_roundtrip_cpu(x, scale, out), blt_fp8_roundtrip_cuda(x, scale, out));
+void blt_fp8_roundtrip(const blt_tensor *x, const blt_tensor *scale, blt_dtype fmt, blt_tensor *out) {
+    BLT_DISPATCH(x, blt_fp8_roundtrip_cpu(x, scale, fmt, out), blt_fp8_roundtrip_cuda(x, scale, fmt, out));
+}
+
+void blt_fp8_transpose(const blt_tensor *src, blt_tensor *dst) {
+    BLT_DISPATCH(src, blt_fp8_transpose_cpu(src, dst), blt_fp8_transpose_cuda(src, dst));
 }
 
 // PASS SYNC

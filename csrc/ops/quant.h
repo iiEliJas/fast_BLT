@@ -24,9 +24,14 @@ void blt_fp8_quantize(const blt_tensor *x, const blt_tensor *scale, blt_tensor *
 // out is [rows, cols] = x^T.
 void blt_fp8_dequantize(const blt_tensor *x, const blt_tensor *scale, blt_tensor *out, int transpose);
 
-// out = dequantize(quantize(x)) with FP32 in and out. This is the CPU ground
-// truth for a tensor that a CUDA FP8 kernel would consume.
-void blt_fp8_roundtrip(const blt_tensor *x, const blt_tensor *scale, blt_tensor *out);
+// out = dequantize(quantize(x)) with FP32 in and out. `fmt` selects the FP8
+// encoding. This is the CPU ground truth for a tensor a CUDA FP8 kernel would
+// consume.
+void blt_fp8_roundtrip(const blt_tensor *x, const blt_tensor *scale, blt_dtype fmt, blt_tensor *out);
+
+// dst = src^T for FP8 buffers. src is [rows, cols], dst is [cols, rows]; the
+// bytes are copied verbatim (no requantization). dst->scale is left untouched.
+void blt_fp8_transpose(const blt_tensor *src, blt_tensor *dst);
 
 // Size/alignment gate for the tensor-core FP8 GEMM. Below the threshold the
 // dequantize + SGEMM fallback is both cheaper and more accurate.

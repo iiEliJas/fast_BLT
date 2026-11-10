@@ -172,8 +172,8 @@ int run_quant_tests(void) {
         ((float *)scale.data)[0] = 7.0f / 448.0f;
         blt_tensor once = blt_tensor_create(arena, (size_t[]){1, 3}, 2, BLT_DTYPE_FP32);
         blt_tensor twice = blt_tensor_create(arena, (size_t[]){1, 3}, 2, BLT_DTYPE_FP32);
-        blt_fp8_roundtrip(&x, &scale, &once);
-        blt_fp8_roundtrip(&once, &scale, &twice);
+        blt_fp8_roundtrip(&x, &scale, BLT_DTYPE_FP8_E4M3, &once);
+        blt_fp8_roundtrip(&once, &scale, BLT_DTYPE_FP8_E4M3, &twice);
         for (size_t i = 0; i < 3; ++i) {
             TEST_ASSERT(fabsf(((float *)once.data)[i] - ((float *)twice.data)[i]) < 1e-6f);
         }

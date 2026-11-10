@@ -35,6 +35,7 @@ int main(void) {
         {"mask builder backend", run_mask_builder_backend_tests},
         {"bf16 cast", run_bf16_cast_tests},
         {"fp8/fp16 quant", run_quant_tests},
+        {"matmul dtype paths", run_matmul_dtypes_tests},
         {"deterministic regression", run_deterministic_regression_test},
         {"topk from logits", run_topk_from_logits_tests},
         {"train window order", run_train_window_order_tests},
@@ -96,6 +97,7 @@ int main(void) {
 
     const test_case parity_tests[] = {
         {"matmul parity", run_matmul_parity_test},
+        {"fp8/fp16 matmul parity", run_cuda_parity_matmul_dtypes},
         {"softmax parity", run_softmax_parity_test},
         {"cuda elementwise parity", run_cuda_parity_elementwise},
         {"cuda reductions parity", run_cuda_parity_reductions},

@@ -40,12 +40,13 @@ static __global__ void quant_scale_kernel(const float *amax, float *out, float m
     out[0] = (s >= min_scale) ? s : min_scale;
 }
 
-static __global__ void quantize_kernel(const float *x, unsigned char *out, float inv, int rows, int cols, int transpose,
-                                       int e5m2) {
+static __global__ void quantize_kernel(const float *x, unsigned char *out, const float *scale, int rows, int cols,
+                                       int transpose, int e5m2) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= rows * cols) return;
     int r = i / cols;
     int c = i - r * cols;
+    float inv = scale ? 1.0f / scale[0] : 1.0f;
     unsigned char q = cvt_to_fp8(x[i] * inv, e5m2);
     if (transpose) {
         out[(long long)c * rows + r] = q;
@@ -54,24 +55,26 @@ static __global__ void quantize_kernel(const float *x, unsigned char *out, float
     }
 }
 
-static __global__ void dequantize_kernel(const unsigned char *x, float *out, float scale, int rows, int cols,
+static __global__ void dequantize_kernel(const unsigned char *x, float *out, const float *scale, int rows, int cols,
                                          int transpose, int e5m2) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= rows * cols) return;
     int r = i / cols;
     int c = i - r * cols;
+    float s = scale ? scale[0] : 1.0f;
     if (transpose) {
-        out[i] = cvt_from_fp8(x[(long long)c * rows + r], e5m2) * scale;
+        out[i] = cvt_from_fp8(x[(long long)c * rows + r], e5m2) * s;
     } else {
-        out[i] = cvt_from_fp8(x[i], e5m2) * scale;
+        out[i] = cvt_from_fp8(x[i], e5m2) * s;
     }
 }
 
-static __global__ void roundtrip_kernel(const float *x, float *out, float scale, int n, int e5m2) {
+static __global__ void roundtrip_kernel(const float *x, float *out, const float *scale, int n, int e5m2) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
-    float inv = 1.0f / scale;
-    out[i] = cvt_from_fp8(cvt_to_fp8(x[i] * inv, e5m2), e5m2) * scale;
+    float s = scale ? scale[0] : 1.0f;
+    float inv = 1.0f / s;
+    out[i] = cvt_from_fp8(cvt_to_fp8(x[i] * inv, e5m2), e5m2) * s;
 }
 
 extern "C" void blt_amax_cuda(const blt_tensor *x, blt_tensor *out) {
@@ -102,11 +105,11 @@ extern "C" void blt_fp8_quantize_cuda(const blt_tensor *x, const blt_tensor *sca
 
     const int rows = (int)x->shape[0];
     const int cols = (int)x->shape[1];
-    const float inv = 1.0f / (scale ? ((const float *)scale->data)[0] : 1.0f);
+    const float *d_scale = scale ? (const float *)scale->data : NULL;
     const int threads = 256;
     int blocks = (rows * cols + threads - 1) / threads;
-    quantize_kernel<<<blocks, threads>>>((const float *)x->data, (unsigned char *)out->data, inv, rows, cols, transpose,
-                                         out->dtype == BLT_DTYPE_FP8_E5M2);
+    quantize_kernel<<<blocks, threads>>>((const float *)x->data, (unsigned char *)out->data, d_scale, rows, cols,
+                                         transpose, out->dtype == BLT_DTYPE_FP8_E5M2);
 }
 
 extern "C" void blt_fp8_dequantize_cuda(const blt_tensor *x, const blt_tensor *scale, blt_tensor *out, int transpose) {
@@ -117,18 +120,39 @@ extern "C" void blt_fp8_dequantize_cuda(const blt_tensor *x, const blt_tensor *s
 
     const int rows = (int)(transpose ? x->shape[1] : x->shape[0]);
     const int cols = (int)(transpose ? x->shape[0] : x->shape[1]);
-    const float s = scale ? ((const float *)scale->data)[0] : 1.0f;
+    const float *d_scale = scale ? (const float *)scale->data : NULL;
     const int threads = 256;
     int blocks = (rows * cols + threads - 1) / threads;
-    dequantize_kernel<<<blocks, threads>>>((const unsigned char *)x->data, (float *)out->data, s, rows, cols, transpose,
-                                           x->dtype == BLT_DTYPE_FP8_E5M2);
+    dequantize_kernel<<<blocks, threads>>>((const unsigned char *)x->data, (float *)out->data, d_scale, rows, cols,
+                                           transpose, x->dtype == BLT_DTYPE_FP8_E5M2);
 }
 
-extern "C" void blt_fp8_roundtrip_cuda(const blt_tensor *x, const blt_tensor *scale, blt_tensor *out) {
+extern "C" void blt_fp8_roundtrip_cuda(const blt_tensor *x, const blt_tensor *scale, blt_dtype fmt, blt_tensor *out) {
     BLT_REQUIRE(x != NULL && out != NULL, "blt_fp8_roundtrip: x and out must not be NULL");
-    const float s = scale ? ((const float *)scale->data)[0] : 1.0f;
+    BLT_REQUIRE(blt_dtype_is_fp8(fmt), "blt_fp8_roundtrip: fmt must be an FP8 dtype");
+    const float *d_scale = scale ? (const float *)scale->data : NULL;
     const int threads = 256;
     int blocks = ((int)x->numel + threads - 1) / threads;
-    roundtrip_kernel<<<blocks, threads>>>((const float *)x->data, (float *)out->data, s, (int)x->numel,
-                                          out->dtype == BLT_DTYPE_FP8_E5M2);
+    roundtrip_kernel<<<blocks, threads>>>((const float *)x->data, (float *)out->data, d_scale, (int)x->numel,
+                                          fmt == BLT_DTYPE_FP8_E5M2);
+}
+
+static __global__ void transpose_kernel(const unsigned char *src, unsigned char *dst, int rows, int cols) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= rows * cols) return;
+    int r = i / cols;
+    int c = i - r * cols;
+    dst[(long long)c * rows + r] = src[i];
+}
+
+extern "C" void blt_fp8_transpose_cuda(const blt_tensor *src, blt_tensor *dst) {
+    BLT_REQUIRE(src != NULL && dst != NULL, "blt_fp8_transpose: src and dst must not be NULL");
+    BLT_REQUIRE(blt_dtype_is_fp8(src->dtype) && src->dtype == dst->dtype,
+                "blt_fp8_transpose: src and dst must share an FP8 dtype");
+    const int rows = (int)src->shape[0];
+    const int cols = (int)src->shape[1];
+    BLT_REQUIRE((int)dst->shape[0] == cols && (int)dst->shape[1] == rows, "blt_fp8_transpose: dst shape must be src^T");
+    const int threads = 256;
+    int blocks = (rows * cols + threads - 1) / threads;
+    transpose_kernel<<<blocks, threads>>>((const unsigned char *)src->data, (unsigned char *)dst->data, rows, cols);
 }
