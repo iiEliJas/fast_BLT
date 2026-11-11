@@ -578,6 +578,19 @@ void blt_fp8_quantize(const blt_tensor *x, const blt_tensor *scale, blt_tensor *
     BLT_DISPATCH(x, blt_fp8_quantize_cpu(x, scale, out, transpose), blt_fp8_quantize_cuda(x, scale, out, transpose));
 }
 
+void blt_fp8_quantize_scaled(const blt_tensor *x, blt_dtype fmt, float min_scale, blt_tensor *out) {
+    BLT_REQUIRE(x != NULL && out != NULL, "blt_fp8_quantize_scaled: x and out must not be NULL");
+    BLT_REQUIRE(blt_dtype_is_fp8(fmt) && out->dtype == fmt,
+                "blt_fp8_quantize_scaled: fmt must be FP8 and match out->dtype");
+    BLT_REQUIRE(out->scale != NULL && out->scale->numel >= 1 && out->scale->dtype == BLT_DTYPE_FP32,
+                "blt_fp8_quantize_scaled: out->scale must point at a 1-element FP32 tensor");
+
+    blt_tensor *scale = (blt_tensor *)out->scale;
+    blt_amax(x, scale);
+    blt_quant_scale(scale, blt_fp8_max(fmt), min_scale, scale);
+    blt_fp8_quantize(x, scale, out, 0);
+}
+
 void blt_fp8_dequantize(const blt_tensor *x, const blt_tensor *scale, blt_tensor *out, int transpose) {
     BLT_DISPATCH(x, blt_fp8_dequantize_cpu(x, scale, out, transpose),
                  blt_fp8_dequantize_cuda(x, scale, out, transpose));

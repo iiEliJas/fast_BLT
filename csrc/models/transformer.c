@@ -8,7 +8,11 @@
 #include "ops/rmsnorm.h"
 #include "ops/rope.h"
 
-static inline int is_fp32_or_bf16(blt_dtype d) { return d == BLT_DTYPE_FP32 || d == BLT_DTYPE_BF16; }
+// Matmul weights may be FP32 or any of the narrow shadow dtypes; norm weights
+// and activations stay FP32.
+static inline int is_weight_dtype(blt_dtype d) {
+    return d == BLT_DTYPE_FP32 || d == BLT_DTYPE_BF16 || d == BLT_DTYPE_FP16 || blt_dtype_is_fp8(d);
+}
 
 static void validate_transformer_call(const blt_tensor *input, const blt_transformer_weights *w,
                                       const blt_tensor *output, const blt_transformer_config *config,
@@ -38,12 +42,12 @@ static void validate_transformer_call(const blt_tensor *input, const blt_transfo
 
     BLT_REQUIRE(w->attn_qkv_w != NULL && w->attn_proj_w != NULL,
                 "Transformer: attn_qkv_w and attn_proj_w cannot be NULL");
-    BLT_REQUIRE(is_fp32_or_bf16(w->attn_qkv_w->dtype), "Transformer: attn_qkv_w must be FP32 or BF16");
-    BLT_REQUIRE(is_fp32_or_bf16(w->attn_proj_w->dtype), "Transformer: attn_proj_w must be FP32 or BF16");
+    BLT_REQUIRE(is_weight_dtype(w->attn_qkv_w->dtype), "Transformer: attn_qkv_w must be FP32, BF16, FP16 or FP8");
+    BLT_REQUIRE(is_weight_dtype(w->attn_proj_w->dtype), "Transformer: attn_proj_w must be FP32, BF16, FP16 or FP8");
 
     BLT_REQUIRE(w->ffn_up_w != NULL && w->ffn_up_w->ndim == 2 && w->ffn_up_w->shape[0] == embed_dim,
                 "Transformer: ffn_up_w must be [embed_dim, hidden_dim]");
-    BLT_REQUIRE(is_fp32_or_bf16(w->ffn_up_w->dtype), "Transformer: ffn_up_w must be FP32 or BF16");
+    BLT_REQUIRE(is_weight_dtype(w->ffn_up_w->dtype), "Transformer: ffn_up_w must be FP32, BF16, FP16 or FP8");
     size_t hidden_dim = w->ffn_up_w->shape[1];
     BLT_REQUIRE(hidden_dim == config->hidden_dim, "Transformer: ffn_up_w hidden dimension mismatch with config");
 
@@ -51,13 +55,13 @@ static void validate_transformer_call(const blt_tensor *input, const blt_transfo
         BLT_REQUIRE(w->ffn_gate_w != NULL && w->ffn_gate_w->ndim == 2 && w->ffn_gate_w->shape[0] == embed_dim &&
                         w->ffn_gate_w->shape[1] == hidden_dim,
                     "Transformer: ffn_gate_w must be [embed_dim, hidden_dim] for SwiGLU");
-        BLT_REQUIRE(is_fp32_or_bf16(w->ffn_gate_w->dtype), "Transformer: ffn_gate_w must be FP32 or BF16");
+        BLT_REQUIRE(is_weight_dtype(w->ffn_gate_w->dtype), "Transformer: ffn_gate_w must be FP32, BF16, FP16 or FP8");
     }
 
     BLT_REQUIRE(w->ffn_down_w != NULL && w->ffn_down_w->ndim == 2 && w->ffn_down_w->shape[0] == hidden_dim &&
                     w->ffn_down_w->shape[1] == embed_dim,
                 "Transformer: ffn_down_w must be [hidden_dim, embed_dim]");
-    BLT_REQUIRE(is_fp32_or_bf16(w->ffn_down_w->dtype), "Transformer: ffn_down_w must be FP32 or BF16");
+    BLT_REQUIRE(is_weight_dtype(w->ffn_down_w->dtype), "Transformer: ffn_down_w must be FP32, BF16, FP16 or FP8");
 
     *out_seq_len = seq_len;
     *out_embed_dim = embed_dim;

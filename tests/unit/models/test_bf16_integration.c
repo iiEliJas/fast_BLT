@@ -28,19 +28,19 @@ static void fill_params(float *w, const blt_param_info *info, void *ctx) {
     for (size_t i = 0; i < info->numel; i++) w[i] = info->is_norm ? 1.0f : fill_next(c);
 }
 
-static blt_model *make_model(blt_arena *arena, int use_bf16, uint64_t seed) {
+static blt_model *make_model(blt_arena *arena, blt_dtype mixed_dtype, uint64_t seed) {
     blt_model_config cfg;
     blt_model_config_defaults(&cfg, 16, 32, 1, 1, 1, 32, 0);
-    cfg.encoder_config.use_bf16 = use_bf16;
-    cfg.decoder_config.use_bf16 = use_bf16;
-    cfg.global_config.use_bf16 = use_bf16;
+    cfg.encoder_config.mixed_dtype = mixed_dtype;
+    cfg.decoder_config.mixed_dtype = mixed_dtype;
+    cfg.global_config.mixed_dtype = mixed_dtype;
 
     blt_model *m = blt_model_create(arena, &cfg);
     if (m == NULL) return NULL;
 
     fill_ctx c = {seed ? seed : 1};
     blt_model_visit_params(m, NULL, fill_params, &c, 0);
-    blt_model_refresh_bf16(m);
+    blt_model_refresh_mixed(m);
     return m;
 }
 
@@ -128,7 +128,7 @@ static int run_steps(blt_model *model, size_t steps, float *losses) {
         update_ctx u = {.lr = lr, .finite = 1};
         blt_model_visit_param_pairs(model, grad, sgd_update, &u);
         TEST_ASSERT(u.finite);
-        blt_model_refresh_bf16(model);
+        blt_model_refresh_mixed(model);
     }
 
     int finite = 1;
@@ -167,18 +167,18 @@ static int checkpoint_roundtrip(blt_model *trained) {
     blt_arena *arena = blt_arena_create(48u << 20, BLT_BACKEND_CPU);
     TEST_ASSERT(arena != NULL);
 
-    blt_model *plain = make_model(arena, 0, 999);
+    blt_model *plain = make_model(arena, BLT_DTYPE_FP32, 999);
     TEST_ASSERT(plain != NULL);
     blt_model_load(plain, path);
     TEST_ASSERT(compare_tensors(trained, plain));
 
-    blt_model *bf16 = make_model(arena, 1, 999);
+    blt_model *bf16 = make_model(arena, BLT_DTYPE_BF16, 999);
     TEST_ASSERT(bf16 != NULL);
     blt_model_load(bf16, path);
-    blt_model_refresh_bf16(bf16);
+    blt_model_refresh_mixed(bf16);
 
     const float *master = (const float *)bf16->decoder->layers[0].ffn_down_w.data;
-    const uint16_t *shadow = (const uint16_t *)bf16->decoder->layers_bf16[0].ffn_down_w.data;
+    const uint16_t *shadow = (const uint16_t *)bf16->decoder->layers_mixed[0].ffn_down_w.data;
     for (size_t i = 0; i < bf16->decoder->layers[0].ffn_down_w.numel; i++) {
         uint32_t bits;
         memcpy(&bits, &master[i], 4);
@@ -198,8 +198,8 @@ int run_bf16_integration_tests(void) {
     blt_arena *bf16_arena = blt_arena_create(48u << 20, BLT_BACKEND_CPU);
     TEST_ASSERT(fp32_arena != NULL && bf16_arena != NULL);
 
-    blt_model *fp32 = make_model(fp32_arena, 0, 4242);
-    blt_model *bf16 = make_model(bf16_arena, 1, 4242);
+    blt_model *fp32 = make_model(fp32_arena, BLT_DTYPE_FP32, 4242);
+    blt_model *bf16 = make_model(bf16_arena, BLT_DTYPE_BF16, 4242);
     TEST_ASSERT(fp32 != NULL && bf16 != NULL);
 
     float fp32_losses[16];

@@ -20,6 +20,12 @@ void blt_quant_scale(const blt_tensor *amax_in, float max_value, float min_scale
 // is set, x is [rows, cols] and out is [cols, rows] holding x^T.
 void blt_fp8_quantize(const blt_tensor *x, const blt_tensor *scale, blt_tensor *out, int transpose);
 
+// Quantize x with a fresh per-tensor amax scale, written into out->scale.
+// out->scale must point at a 1-element FP32 tensor; the same tensor is used as
+// amax scratch, so the read-then-write ordering inside blt_quant_scale is what
+// keeps this a single buffer.
+void blt_fp8_quantize_scaled(const blt_tensor *x, blt_dtype fmt, float min_scale, blt_tensor *out);
+
 // out = fp32(x) * scale. When transpose is set, x is stored as [cols, rows] and
 // out is [rows, cols] = x^T.
 void blt_fp8_dequantize(const blt_tensor *x, const blt_tensor *scale, blt_tensor *out, int transpose);

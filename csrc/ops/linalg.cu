@@ -142,6 +142,12 @@ static const blt_tensor *blt_to_f32(const blt_tensor *t, blt_tensor *slot) {
     return slot;
 }
 
+// cuBLASLt requires every FP8/FP32 operand pointer to be 16-byte aligned. Arena
+// tensors are 64-byte aligned, but a matmul output can be a view into a packed
+// buffer at an arbitrary byte offset, so the check is positional rather than
+// structural.
+static int blt_ptr_16b(const void *p) { return (((uintptr_t)p) & 15u) == 0; }
+
 // C[m,n] = A_slot^T @ B_slot with A_slot [n,k] and B_slot [m,k], both row-major
 // FP8. This is the only orientation cuBLASLt exposes for FP8 on pre-Blackwell
 // parts, and it covers forward and both gradient GEMMs.
@@ -169,11 +175,26 @@ static void blt_fp8_gemm(const blt_tensor *a_slot, const float *a_scale, const b
     blt_cublas_check(cublasLtMatrixLayoutCreate(&lb, dt, k, m, k), "cublasLt layout B");
     blt_cublas_check(cublasLtMatrixLayoutCreate(&lc, CUDA_R_32F, n, m, n), "cublasLt layout C");
 
+    // An unaligned destination is staged through scratch and copied back; the
+    // C layout is plain row-major [m,n], so the copy is a straight byte copy.
+    void *c_ptr = out;
+    blt_tensor c_stage = {0};
+    const size_t c_bytes = (size_t)m * (size_t)n * sizeof(float);
+    if (!blt_ptr_16b(out)) {
+        c_stage = blt_scratch_2d((size_t)m, (size_t)n, BLT_DTYPE_FP32);
+        c_ptr = c_stage.data;
+    }
+
     const float alpha = 1.0f, beta = 0.0f;
     const size_t ws_bytes = 32u << 20;
-    blt_cublas_check(cublasLtMatmul(lt, desc, &alpha, a_slot->data, la, b_slot->data, lb, &beta, out, lc, out, lc, NULL,
-                                    blt_lt_workspace(), ws_bytes, 0),
+    blt_cublas_check(cublasLtMatmul(lt, desc, &alpha, a_slot->data, la, b_slot->data, lb, &beta, c_ptr, lc, c_ptr, lc,
+                                    NULL, blt_lt_workspace(), ws_bytes, 0),
                      "cublasLtMatmul fp8");
+    if (c_stage.data != NULL) {
+        if (cudaMemcpy(out, c_stage.data, c_bytes, cudaMemcpyDeviceToDevice) != cudaSuccess) {
+            BLT_FATAL("blt_matmul: failed to copy staged FP8 GEMM output");
+        }
+    }
 
     cublasLtMatmulDescDestroy(desc);
     cublasLtMatrixLayoutDestroy(la);
@@ -211,7 +232,9 @@ extern "C" void blt_matmul_cuda(const blt_tensor *a, const blt_tensor *b, blt_te
 
     if (a_fp8 || b_fp8) {
         const blt_dtype fmt = b_fp8 ? b->dtype : a->dtype;
-        if (b_fp8 && a->dtype == BLT_DTYPE_FP32 && blt_fp8_matmul_eligible(m, k, n)) {
+        // The activation operand is quantized into aligned scratch, so only the
+        // weight pointer can be off; a misaligned destination is staged instead.
+        if (b_fp8 && a->dtype == BLT_DTYPE_FP32 && blt_fp8_matmul_eligible(m, k, n) && blt_ptr_16b(b->data)) {
             blt_fp8_operand aq = blt_as_fp8(a, fmt, 0);
             blt_fp8_operand wq = blt_as_fp8(b, fmt, 1);
             blt_fp8_gemm(&wq.data, wq.scale, &aq.data, aq.scale, out->data, (int)m, (int)k, (int)n,
@@ -277,7 +300,7 @@ extern "C" void blt_matmul_backward_cuda(const blt_tensor *a, const blt_tensor *
         const int e5m2 = fmt == BLT_DTYPE_FP8_E5M2;
 
         if (grad_a != NULL) {
-            const int fast = b_fp8 && blt_fp8_matmul_eligible(m, n, k);
+            const int fast = b_fp8 && blt_fp8_matmul_eligible(m, n, k) && blt_ptr_16b(b->data);
             blt_fp8_operand wq = blt_as_fp8(b, fmt, 0);
             if (fast) {
                 blt_fp8_operand gq = blt_as_fp8(grad_out, fmt, 0);
@@ -294,7 +317,7 @@ extern "C" void blt_matmul_backward_cuda(const blt_tensor *a, const blt_tensor *
         }
 
         if (grad_b != NULL) {
-            const int fast = b_fp8 && blt_fp8_matmul_eligible(k, m, n);
+            const int fast = b_fp8 && blt_fp8_matmul_eligible(k, m, n) && blt_ptr_16b(a->data);
             blt_fp8_operand gt = blt_as_fp8(grad_out, fmt, 1);
             blt_fp8_operand at = blt_as_fp8(a, fmt, 1);
             if (fast) {

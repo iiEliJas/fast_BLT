@@ -48,18 +48,18 @@ blt_model *blt_model_create(blt_arena *arena, const blt_model_config *config) {
     return model;
 }
 
-void blt_model_refresh_bf16(blt_model *model) {
+void blt_model_refresh_mixed(blt_model *model) {
     if (model == NULL) {
         return;
     }
     if (model->encoder != NULL) {
-        blt_local_encoder_refresh_bf16(model->encoder);
+        blt_local_encoder_refresh_mixed(model->encoder);
     }
     if (model->global != NULL) {
-        blt_transformer_stack_refresh_bf16(&model->global->stack);
+        blt_transformer_stack_refresh_mixed(&model->global->stack);
     }
     if (model->decoder != NULL) {
-        blt_local_decoder_refresh_bf16(model->decoder);
+        blt_local_decoder_refresh_mixed(model->decoder);
     }
 }
 

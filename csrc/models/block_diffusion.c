@@ -335,7 +335,7 @@ static void forward_with_caches(const blt_local_decoder *model, const diff_ctx *
 
     for (size_t l = 0; l < c->L; l++) {
         const blt_local_decoder_layer_storage *s = &model->layers[l];
-        const blt_local_layer_bf16 *bf = model->config.use_bf16 ? &model->layers_bf16[l] : NULL;
+        const blt_local_layer_mixed *bf = model->config.mixed_dtype != BLT_DTYPE_FP32 ? &model->layers_mixed[l] : NULL;
         blt_transformer_weights w = blt_local_byte_weights_view_mixed(s, bf);
         diff_layer_cache *ca = &caches[l];
         ca->d_in = cur;
@@ -395,7 +395,7 @@ static void forward_with_caches(const blt_local_decoder *model, const diff_ctx *
     *final_states = cur;
     size_t logits_shape[2] = {c->S, c->V};
     *logits = blt_tensor_create(arena, logits_shape, 2, BLT_DTYPE_FP32);
-    blt_matmul(final_states, &model->lm_head_weight, logits);
+    blt_matmul(final_states, blt_local_decoder_lm_head(model), logits);
 }
 
 static void make_bytes_tensor(blt_arena *arena, const uint8_t *bytes, size_t len, blt_tensor *out) {
@@ -600,7 +600,7 @@ void blt_local_decoder_backward_diffusion(const blt_local_decoder *model, const 
 
     // LM head backward -> dL/d(final states).
     blt_tensor dh = blt_tensor_create(arena, (size_t[2]){c.S, c.E}, 2, BLT_DTYPE_FP32);
-    blt_matmul_backward(&final_states, &model->lm_head_weight, &grad_logits, &dh, &grad->lm_head_grad);
+    blt_matmul_backward(&final_states, blt_local_decoder_lm_head(model), &grad_logits, &dh, &grad->lm_head_grad);
 
     // Reverse layer loop.
     blt_tensor dP_split = blt_tensor_create(arena, (size_t[2]){num_patches * c.k, c.E}, 2, BLT_DTYPE_FP32); // zero-init
@@ -610,7 +610,7 @@ void blt_local_decoder_backward_diffusion(const blt_local_decoder *model, const 
 
     for (size_t li = c.L; li-- > 0;) {
         const blt_local_decoder_layer_storage *s = &model->layers[li];
-        const blt_local_layer_bf16 *bf = model->config.use_bf16 ? &model->layers_bf16[li] : NULL;
+        const blt_local_layer_mixed *bf = model->config.mixed_dtype != BLT_DTYPE_FP32 ? &model->layers_mixed[li] : NULL;
         blt_transformer_weights w = blt_local_byte_weights_view_mixed(s, bf);
         blt_local_decoder_layer_grad *lg = &grad->layer_grads[li];
         const diff_layer_cache *ca = &caches[li];

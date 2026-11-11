@@ -153,7 +153,7 @@ void blt_kv_cache_refresh_cross(blt_kv_cache *cache, const blt_tensor *patch_in,
             continue;
         }
         const blt_local_decoder_layer_storage *s = &dec->layers[l];
-        const blt_local_layer_bf16 *bf = dec->config.use_bf16 ? &dec->layers_bf16[l] : NULL;
+        const blt_local_layer_mixed *bf = dec->config.mixed_dtype != BLT_DTYPE_FP32 ? &dec->layers_mixed[l] : NULL;
         blt_cross_attention_weights xw = blt_local_cross_weights_view_mixed(s, bf);
         refresh_cross_layer(cache, l, &xw, &patch_in_split, from_patch * cache->k,
                             (num_patches - from_patch) * cache->k);
@@ -287,7 +287,7 @@ void blt_kv_decode_step(blt_kv_cache *cache, const blt_tensor *patch_in, const b
     const size_t L = cfg->num_layers;
     for (size_t l = 0; l < L; l++) {
         const blt_local_decoder_layer_storage *s = &dec->layers[l];
-        const blt_local_layer_bf16 *bf = cfg->use_bf16 ? &dec->layers_bf16[l] : NULL;
+        const blt_local_layer_mixed *bf = cfg->mixed_dtype != BLT_DTYPE_FP32 ? &dec->layers_mixed[l] : NULL;
         blt_transformer_weights w = blt_local_byte_weights_view_mixed(s, bf);
         size_t shape2[2] = {n, E};
         blt_tensor b;
@@ -417,7 +417,7 @@ void blt_kv_decode_step(blt_kv_cache *cache, const blt_tensor *patch_in, const b
         cur = next;
     }
 
-    blt_matmul(&cur, &dec->lm_head_weight, logits_out);
+    blt_matmul(&cur, blt_local_decoder_lm_head(dec), logits_out);
 
     cache->self_len = total;
 }

@@ -6,6 +6,7 @@ extern "C" {
 #endif
 #include "core/tensor.h"
 #include "core/allocator.h"
+#include "core/dtype.h"
 #include "models/transformer.h"
 
 // N identical transformer blocks sharing one RoPE cache, with plain
@@ -14,10 +15,11 @@ extern "C" {
 typedef struct {
     blt_transformer_config layer_config;
 
-    blt_transformer_layer_storage *layer_storage;     // owned weights, [num_layers]
-    blt_transformer_weights *layer_weights;           // const-views into layer_storage, [num_layers]
-    blt_transformer_weights_bf16 *layer_weights_bf16; // bf16 weight views, [num_layers] (NULL when use_bf16=0)
-    blt_transformer_weights *layer_weights_fp8;       // fp8 weight views, [num_layers] (NULL when use_fp8=0)
+    blt_transformer_layer_storage *layer_storage; // owned weights, [num_layers]
+    blt_transformer_weights *layer_weights;       // const-views into layer_storage, [num_layers]
+    // Full weight views with the mixed-precision shadows already substituted,
+    // [num_layers]. NULL when mixed_dtype is FP32.
+    blt_transformer_weights *layer_weights_shadow;
 
     blt_tensor rope_cos_cache; // [max_seq_len, head_dim/2]
     blt_tensor rope_sin_cache; // [max_seq_len, head_dim/2]
@@ -28,8 +30,7 @@ typedef struct {
     size_t num_heads;
     size_t head_dim;
     size_t max_seq_len;
-    int use_bf16;
-    int use_fp8;
+    blt_dtype mixed_dtype;
 } blt_transformer_stack;
 
 typedef struct {
@@ -48,8 +49,9 @@ typedef struct {
     size_t num_heads;   // embed_dim must be divisible by num_heads
     size_t max_seq_len; // upper bound used to size the shared RoPE cache
     float rope_theta;
-    int use_bf16; // 1 = allocate bf16 weight copies for mixed-precision matmul
-    int use_fp8;  // 1 = allocate fp8 weight copies
+    // FP32 (no shadows) / BF16 / FP16 / FP8 E4M3 / FP8 E5M2 shadows of the
+    // matmul weights.
+    blt_dtype mixed_dtype;
 } blt_transformer_stack_config;
 
 // Precomputes the shared RoPE cache. Caller fills weight data afterward
@@ -104,11 +106,10 @@ void blt_transformer_layer_backward(const blt_transformer_layer_cache *cache, co
                                     size_t embed_dim, size_t hidden_dim, const blt_tensor *grad_out,
                                     blt_transformer_layer_grad *lg, blt_tensor *grad_x);
 
-void blt_transformer_stack_refresh_fp8(blt_transformer_stack *stack);
-
-// Copies each layer's FP32 matmul weights into their BF16 shadows.
-// No-op when the stack was not initialised with use_bf16.
-void blt_transformer_stack_refresh_bf16(blt_transformer_stack *stack);
+// Copies each layer's FP32 matmul weights into their mixed-precision shadows
+// (cast for BF16/FP16, amax-scaled quantization for FP8). No-op when the stack
+// has no shadows. Call once per step, after the optimizer update.
+void blt_transformer_stack_refresh_mixed(blt_transformer_stack *stack);
 
 #ifdef __cplusplus
 }

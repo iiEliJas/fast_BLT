@@ -18,7 +18,9 @@
 static void check_cross_weight(const blt_tensor *w, size_t embed_dim, const char *name) {
     BLT_REQUIRE(w != NULL && w->ndim == 2 && w->shape[0] == embed_dim && w->shape[1] == embed_dim,
                 "%s must be [embed_dim, embed_dim]", name);
-    BLT_REQUIRE(w->dtype == BLT_DTYPE_FP32 || w->dtype == BLT_DTYPE_BF16, "%s must be FP32 or BF16", name);
+    BLT_REQUIRE(w->dtype == BLT_DTYPE_FP32 || w->dtype == BLT_DTYPE_BF16 || w->dtype == BLT_DTYPE_FP16 ||
+                    blt_dtype_is_fp8(w->dtype),
+                "%s must be FP32, BF16, FP16 or FP8", name);
 }
 
 static void validate_cross_attention_call(const blt_tensor *query_in, const blt_tensor *kv_in,
