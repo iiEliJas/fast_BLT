@@ -88,6 +88,9 @@ typedef struct {
     blt_dtype mixed_dtype;
     // Selects the FP8 encoding when mixed_dtype is an FP8 dtype.
     int fp8_e5m2;
+    // Whether --fp8-format was passed at all, so the trainer can reject it
+    // next to a non-FP8 dtype instead of silently ignoring it.
+    int fp8_format_set;
     int flash_attn;
     size_t cuda_scratch_mb;
     size_t scratch_mb;

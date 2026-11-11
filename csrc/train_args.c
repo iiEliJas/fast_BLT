@@ -164,6 +164,7 @@ args_t parse_args(int argc, char **argv) {
                 .deterministic = 0,
                 .mixed_dtype = BLT_DTYPE_FP32,
                 .fp8_e5m2 = 0,
+                .fp8_format_set = 0,
                 .flash_attn = 0,
                 .cuda_scratch_mb = 0,
                 .scratch_mb = 0,
@@ -300,6 +301,7 @@ args_t parse_args(int argc, char **argv) {
             }
         } else if (!strcmp(argv[i], "--fp8-format") && i + 1 < argc) {
             ++i;
+            a.fp8_format_set = 1;
             if (!strcmp(argv[i], "e4m3")) a.fp8_e5m2 = 0;
             else if (!strcmp(argv[i], "e5m2")) a.fp8_e5m2 = 1;
             else {

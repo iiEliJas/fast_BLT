@@ -360,7 +360,7 @@ int main(int argc, char **argv) {
     // FP8 request, and every later use reads mixed_dtype.
     const blt_dtype mixed_dtype =
         (a.mixed_dtype == BLT_DTYPE_FP8_E4M3 && a.fp8_e5m2) ? BLT_DTYPE_FP8_E5M2 : a.mixed_dtype;
-    if (a.fp8_e5m2 && !blt_dtype_is_fp8(mixed_dtype)) {
+    if (a.fp8_format_set && !blt_dtype_is_fp8(mixed_dtype)) {
         fprintf(stderr, "train_blt_d: --fp8-format only applies to --dtype fp8\n");
         return 1;
     }
