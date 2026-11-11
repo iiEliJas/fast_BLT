@@ -12,7 +12,7 @@ The project implements ideas from two Meta FAIR papers:
 
 ## Status
 
-Version 1.0 is a complete implementation of the training and inference pipeline. The largest demonstrated model is **7.8M parameters** (TinyStories, 600k steps). CPU and CUDA builds are supported. BF16 mixed-precision training is available on CUDA (`--dtype bf16`); multi-GPU training and post-training (SFT/RL) are not implemented in 1.0; see [todo.md](todo.md).
+Version 1.0 is a complete implementation of the training and inference pipeline. The largest demonstrated model is **7.8M parameters** (TinyStories, 600k steps). CPU and CUDA builds are supported. BF16, FP16, and FP8 mixed-precision training are available on CUDA (`--dtype bf16|fp16|fp8`); multi-GPU training and post-training (SFT/RL) are not implemented in 1.0; see [todo.md](todo.md).
 
 ## Example output
 
@@ -117,7 +117,7 @@ At the 7.8M-parameter scale, BLT-DV beats greedy decoding only at the trained bl
 - CUDA runs are non-deterministic unless `--deterministic` is passed.
 - Sampling (`--temperature`, `--top-p`, `--top-k`, etc.) works only with `--method greedy`.
 - Single-GPU / single-process only.
-- BF16 mixed precision is CUDA-only. The trainer keeps FP32 master weights, optimizer state, normalization, softmax, cross-entropy, and checkpoints; only forward matmul operands and the backward input-gradient GEMM read the BF16 shadows. The local encoder/decoder and the global transformer all use BF16 shadow weights, refreshed after every optimizer step. On CPU the trainer rejects `--dtype bf16` because the CPU matmul path only emulates the cast with FP32 temporaries. Raw BF16 GEMMs are 2.2-3.2x faster than FP32 on an RTX 4060, but end-to-end step time improves only a few percent at the model sizes in this repository; see [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+- Narrow math dtypes (`--dtype bf16|fp16|fp8`) are CUDA-only. The trainer keeps FP32 master weights, gradients, optimizer state, normalization, softmax, cross-entropy, and checkpoints; only the GEMM multiplicands are rounded, through shadow weights refreshed after every optimizer step. FP8 stores one scale per weight tensor and pairs E5M2 weights with E4M3 activations because cuBLASLt has no E5M2 x E5M2 kernel before Blackwell. On CPU the trainer rejects every non-FP32 dtype because the CPU matmul path only emulates the cast with FP32 temporaries. Raw BF16/FP16 GEMMs are 2.2-3.2x faster than FP32 on an RTX 4060 and FP8 is ~1.8x, but end-to-end step time improves only a few percent at the model sizes in this repository; see [docs/MIXED_PRECISION.md](docs/MIXED_PRECISION.md) and [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## Community experiments
 

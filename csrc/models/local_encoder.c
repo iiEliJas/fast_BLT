@@ -150,23 +150,23 @@ blt_local_encoder *blt_local_encoder_create(blt_arena *arena, const blt_local_en
         blt_local_layer_storage_alloc(arena, &m->layers[l], E, hidden);
     }
 
-    m->layers_bf16 = NULL;
-    if (config->use_bf16) {
-        m->layers_bf16 =
-            (blt_local_layer_bf16 *)blt_container_alloc(arena, config->num_layers * sizeof(blt_local_layer_bf16));
+    m->layers_mixed = NULL;
+    if (config->mixed_dtype != BLT_DTYPE_FP32) {
+        m->layers_mixed =
+            (blt_local_layer_mixed *)blt_container_alloc(arena, config->num_layers * sizeof(blt_local_layer_mixed));
         for (size_t l = 0; l < config->num_layers; ++l) {
-            blt_local_layer_bf16_alloc(arena, &m->layers_bf16[l], E, hidden);
+            blt_local_layer_mixed_alloc(arena, &m->layers_mixed[l], E, hidden, config->mixed_dtype);
         }
     }
     return m;
 }
 
-void blt_local_encoder_refresh_bf16(blt_local_encoder *model) {
-    if (model == NULL || !model->config.use_bf16 || model->layers_bf16 == NULL) {
+void blt_local_encoder_refresh_mixed(blt_local_encoder *model) {
+    if (model == NULL || model->config.mixed_dtype == BLT_DTYPE_FP32 || model->layers_mixed == NULL) {
         return;
     }
     for (size_t l = 0; l < model->config.num_layers; ++l) {
-        blt_local_layer_bf16_refresh(&model->layers_bf16[l], &model->layers[l]);
+        blt_local_layer_mixed_refresh(&model->layers_mixed[l], &model->layers[l]);
     }
 }
 
@@ -265,7 +265,7 @@ void blt_local_encoder_forward(const blt_local_encoder *model, const blt_tensor 
     // layer loop
     for (size_t l = 0; l < config->num_layers; ++l) {
         const blt_local_encoder_layer_storage *s = &model->layers[l];
-        const blt_local_layer_bf16 *b = model->config.use_bf16 ? &model->layers_bf16[l] : NULL;
+        const blt_local_layer_mixed *b = model->config.mixed_dtype != BLT_DTYPE_FP32 ? &model->layers_mixed[l] : NULL;
 
         blt_transformer_weights w = blt_local_byte_weights_view_mixed(s, b);
         blt_tensor h_next = blt_tensor_create(arena, byte_shape, 2, BLT_DTYPE_FP32);
@@ -378,7 +378,7 @@ void blt_local_encoder_backward(const blt_local_encoder *model, const blt_tensor
     for (size_t l = 0; l < L; ++l) {
         const blt_local_encoder_layer_storage *s = &model->layers[l];
         layer_cache *c = &caches[l];
-        const blt_local_layer_bf16 *b = model->config.use_bf16 ? &model->layers_bf16[l] : NULL;
+        const blt_local_layer_mixed *b = model->config.mixed_dtype != BLT_DTYPE_FP32 ? &model->layers_mixed[l] : NULL;
 
         blt_transformer_weights w = blt_local_byte_weights_view_mixed(s, b);
         c->byte_cache = blt_transformer_layer_forward_cached(&h[l], &w, &layer_config, arena, seq_len, E,
@@ -426,7 +426,7 @@ void blt_local_encoder_backward(const blt_local_encoder *model, const blt_tensor
         const blt_local_encoder_layer_storage *s = &model->layers[li];
         blt_local_encoder_layer_grad *lg = &grad->layer_grads[li];
         const layer_cache *c = &caches[li];
-        const blt_local_layer_bf16 *b = model->config.use_bf16 ? &model->layers_bf16[li] : NULL;
+        const blt_local_layer_mixed *b = model->config.mixed_dtype != BLT_DTYPE_FP32 ? &model->layers_mixed[li] : NULL;
 
         if (c->has_cross) {
             blt_cross_attention_weights xw = blt_local_cross_weights_view_mixed(s, b);

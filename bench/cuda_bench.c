@@ -21,12 +21,15 @@
 
 #include "core/allocator.h"
 #include "core/backend.h"
+#include "core/cuda_shim.h"
+#include "core/device_info.h"
 #include "models/model.h"
 #include "models/checkpoint.h"
 #include "ops/elementwise.h"
 #include "ops/gelu.h"
 #include "ops/matmul.h"
 #include "ops/cast.h"
+#include "ops/quant.h"
 #include "models/transformer_stack.h"
 #include "core/flops.h"
 
@@ -117,14 +120,18 @@ static void bench_matmul_cell(blt_arena *arena, size_t n, size_t iters, const ch
     printf("  %-28s %10.2f TFLOP/s (%5.1f%% of %.1f ref)\n", tag, tflops, mfu, PEAK_TFLOPS_CUDA);
 }
 
-static void bench_matmul_bf16_cell(blt_arena *arena, size_t n, size_t iters, const char *backend_tag,
-                                   const char *results_path) {
+// Low-precision GEMM throughput. BF16/FP16 put both operands in the narrow
+// dtype (the trainer's cast path). FP8 keeps the activation in FP32 and stores
+// only the weight as an FP8 shadow with a per-tensor scale, so blt_matmul
+// quantizes the activation internally on every call -- exactly the training
+// recipe, and the measured rate includes that conversion.
+static void bench_matmul_dtype_cell(blt_arena *arena, size_t n, size_t iters, blt_dtype dtype, const char *dt_tag,
+                                    const char *backend_tag, const char *results_path) {
+    // Each dtype cell owns its tensors end to end; reset first so the twelve
+    // cells (six of them n = 2048, ~60 MB each) do not exhaust the arena.
+    blt_arena_reset(arena);
     uint32_t seed = 0xBEEF0000u ^ (uint32_t)n;
-    // Create bf16 inputs directly on the backend
-    blt_tensor a = blt_tensor_create(arena, (size_t[2]){n, n}, 2, BLT_DTYPE_BF16);
-    blt_tensor b = blt_tensor_create(arena, (size_t[2]){n, n}, 2, BLT_DTYPE_BF16);
-    blt_tensor c = blt_tensor_create(arena, (size_t[2]){n, n}, 2, BLT_DTYPE_FP32);
-    // Fill with random data via fp32→bf16 cast
+    const int fp8 = blt_dtype_is_fp8(dtype);
     blt_tensor tmp_a = blt_tensor_create(arena, (size_t[2]){n, n}, 2, BLT_DTYPE_FP32);
     blt_tensor tmp_b = blt_tensor_create(arena, (size_t[2]){n, n}, 2, BLT_DTYPE_FP32);
     if (arena->backend != BLT_BACKEND_CPU) {
@@ -138,13 +145,48 @@ static void bench_matmul_bf16_cell(blt_arena *arena, size_t n, size_t iters, con
         fill_random_host((float *)tmp_a.data, tmp_a.numel, 0.05f, &seed);
         fill_random_host((float *)tmp_b.data, tmp_b.numel, 0.05f, &seed);
     }
-    blt_cast(&tmp_a, &a);
-    blt_cast(&tmp_b, &b);
 
-    for (size_t i = 0; i < 3; i++) blt_matmul(&a, &b, &c);
+    blt_tensor a, b;
+    if (fp8) {
+        // Same FP8 shadow construction as blt_mixed_weight_refresh: quantize
+        // the [K,N] master untransposed (the model's own layout) with one
+        // per-tensor scale, which is stored in an arena slot so b.scale stays
+        // valid for the whole cell.
+        a = tmp_a;
+        b = blt_tensor_create(arena, (size_t[2]){n, n}, 2, dtype);
+        blt_tensor amax = blt_tensor_create(arena, (size_t[1]){1}, 1, BLT_DTYPE_FP32);
+        blt_tensor scale = blt_tensor_create(arena, (size_t[1]){1}, 1, BLT_DTYPE_FP32);
+        blt_amax(&tmp_b, &amax);
+        blt_quant_scale(&amax, blt_fp8_max(dtype), 1e-30f, &scale);
+        blt_fp8_quantize(&tmp_b, &scale, &b, 0);
+        blt_tensor *scale_slot = (blt_tensor *)blt_container_alloc(arena, sizeof(blt_tensor));
+        *scale_slot = scale;
+        b.scale = scale_slot;
+    } else {
+        a = blt_tensor_create(arena, (size_t[2]){n, n}, 2, dtype);
+        b = blt_tensor_create(arena, (size_t[2]){n, n}, 2, dtype);
+        blt_cast(&tmp_a, &a);
+        blt_cast(&tmp_b, &b);
+    }
+    blt_tensor c = blt_tensor_create(arena, (size_t[2]){n, n}, 2, BLT_DTYPE_FP32);
+
+    for (size_t i = 0; i < 3; i++) {
+#ifdef BLT_WITH_CUDA
+        // The FP8 path allocates the quantized activation and a transposed
+        // weight copy from the CUDA scratch arena on every call; reset per
+        // iteration so long runs stay bounded (train_blt_d does the same).
+        if (fp8) blt_cuda_scratch_reset();
+#endif
+        blt_matmul(&a, &b, &c);
+    }
 
     bench_timer_start();
-    for (size_t i = 0; i < iters; i++) blt_matmul(&a, &b, &c);
+    for (size_t i = 0; i < iters; i++) {
+#ifdef BLT_WITH_CUDA
+        if (fp8) blt_cuda_scratch_reset();
+#endif
+        blt_matmul(&a, &b, &c);
+    }
     backend_sync(&c);
     const double sec = bench_timer_stop_sec();
 
@@ -152,7 +194,7 @@ static void bench_matmul_bf16_cell(blt_arena *arena, size_t n, size_t iters, con
     const double mfu = 100.0 * tflops / PEAK_TFLOPS_CUDA;
 
     char tag[BENCH_TAG_LEN];
-    snprintf(tag, sizeof(tag), "micro_matmul_bf16_%zu_%s", n, backend_tag);
+    snprintf(tag, sizeof(tag), "micro_matmul_%s_%zu_%s", dt_tag, n, backend_tag);
     bench_result r;
     bench_result_init(&r, "cuda_bench", tag, "7_cuda_bench");
     double lat[1] = {sec};
@@ -322,14 +364,14 @@ static void scenario_build(scenario *sc, blt_arena *host, blt_arena *persist, bl
     (void)scratch;
     blt_model_config cfg;
     build_model_config(&cfg, 2048);
-    cfg.encoder_config.use_bf16 = use_bf16;
-    cfg.decoder_config.use_bf16 = use_bf16;
-    cfg.global_config.use_bf16 = use_bf16;
+    cfg.encoder_config.mixed_dtype = use_bf16 ? BLT_DTYPE_BF16 : BLT_DTYPE_FP32;
+    cfg.decoder_config.mixed_dtype = use_bf16 ? BLT_DTYPE_BF16 : BLT_DTYPE_FP32;
+    cfg.global_config.mixed_dtype = use_bf16 ? BLT_DTYPE_BF16 : BLT_DTYPE_FP32;
 
     sc->model = blt_model_create(persist, &cfg);
     uint32_t seed = 0x5EED0000u ^ (uint32_t)seq;
     randomize_model(sc->model, host, &seed);
-    blt_model_refresh_bf16(sc->model);
+    blt_model_refresh_mixed(sc->model);
     sc->grad = blt_model_grad_create(persist, sc->model);
 
     sc->bytes_in = blt_tensor_create(persist, (size_t[1]){seq}, 1, BLT_DTYPE_UINT8);
@@ -701,9 +743,23 @@ int main(int argc, char **argv) {
         bench_matmul_cell(arena, 512, a.iters * 4, bt, a.results_path);
         bench_matmul_cell(arena, 1024, a.iters * 2, bt, a.results_path);
         bench_matmul_cell(arena, 2048, a.iters, bt, a.results_path);
-        bench_matmul_bf16_cell(arena, 512, a.iters * 4, bt, a.results_path);
-        bench_matmul_bf16_cell(arena, 1024, a.iters * 2, bt, a.results_path);
-        bench_matmul_bf16_cell(arena, 2048, a.iters, bt, a.results_path);
+        bench_matmul_dtype_cell(arena, 512, a.iters * 4, BLT_DTYPE_BF16, "bf16", bt, a.results_path);
+        bench_matmul_dtype_cell(arena, 1024, a.iters * 2, BLT_DTYPE_BF16, "bf16", bt, a.results_path);
+        bench_matmul_dtype_cell(arena, 2048, a.iters, BLT_DTYPE_BF16, "bf16", bt, a.results_path);
+        bench_matmul_dtype_cell(arena, 512, a.iters * 4, BLT_DTYPE_FP16, "fp16", bt, a.results_path);
+        bench_matmul_dtype_cell(arena, 1024, a.iters * 2, BLT_DTYPE_FP16, "fp16", bt, a.results_path);
+        bench_matmul_dtype_cell(arena, 2048, a.iters, BLT_DTYPE_FP16, "fp16", bt, a.results_path);
+        if (a.use_cuda && blt_cuda_supports_fp8()) {
+            bench_matmul_dtype_cell(arena, 512, a.iters * 4, BLT_DTYPE_FP8_E4M3, "fp8_e4m3", bt, a.results_path);
+            bench_matmul_dtype_cell(arena, 1024, a.iters * 2, BLT_DTYPE_FP8_E4M3, "fp8_e4m3", bt, a.results_path);
+            bench_matmul_dtype_cell(arena, 2048, a.iters, BLT_DTYPE_FP8_E4M3, "fp8_e4m3", bt, a.results_path);
+            bench_matmul_dtype_cell(arena, 512, a.iters * 4, BLT_DTYPE_FP8_E5M2, "fp8_e5m2", bt, a.results_path);
+            bench_matmul_dtype_cell(arena, 1024, a.iters * 2, BLT_DTYPE_FP8_E5M2, "fp8_e5m2", bt, a.results_path);
+            bench_matmul_dtype_cell(arena, 2048, a.iters, BLT_DTYPE_FP8_E5M2, "fp8_e5m2", bt, a.results_path);
+        } else {
+            printf("  micro_matmul_fp8_* skipped: %s\n",
+                   a.use_cuda ? "device has no FP8 tensor cores (needs CC >= 8.9)" : "CPU backend");
+        }
 
         printf(" meso (pipeline fwd/bwd, E=%d L=%d)\n", BENCH_E, BENCH_L);
         meso_cell(host, arena, 256, a.iters, bt, a.results_path);

@@ -400,6 +400,29 @@ mean absolute per-step loss difference 0.18 (max 2.44 on losses in 203-903), no 
 
 Full design, per-phase numbers, meso results, and limitations: [E010](experiments/E010_bf16_mixed_precision.md).
 
+### FP16 and FP8 (`--dtype fp16|fp8`)
+
+Measured in one run on the same RTX 4060 with CUDA 13.3 / cuBLASLt 13.6 (the BF16 table above
+was taken with CUDA 12.0, so do not mix columns between the two). `cuda_bench` default
+`--iters 10`, square GEMMs, FP32 accumulation throughout:
+
+| n | FP32 | BF16 | FP16 | FP8-E4M3 | FP8-E5M2 |
+|---|-----:|-----:|-----:|---------:|---------:|
+| 512 | 5.71 | 11.63 | 11.09 | 4.04 | 4.05 |
+| 1024 | 6.88 | 18.60 | 18.70 | 7.43 | 7.86 |
+| 2048 | 6.54 | 19.24 | 20.45 | 11.46 | 11.57 |
+
+The FP8 cells run the training recipe, not a bare kernel benchmark: the activation stays FP32
+and is quantized on every call, and the weight shadow is stored `[K,N]` and transposed into
+scratch for the TN-only cuBLASLt kernel. At n=512 the conversion dominates and the cell is
+tens of microseconds long, so run-to-run spread is 20-40%. E5M2 tracks E4M3 because only the
+weight encoding differs.
+
+FP8 therefore beats FP32 by ~1.8x at n=2048 and loses to BF16 on Ada. Given that end-to-end
+steps at the model sizes here are launch- and elementwise-bound, treat `--dtype fp8` as a
+supported capability rather than a speed feature. Scaling rules and the E5M2 x E5M2 constraint
+that forces E4M3 activation operands: [MIXED_PRECISION.md](MIXED_PRECISION.md).
+
 ## Device table and MFU/MBU
 
 Peak FLOPS and HBM bandwidth come from `csrc/core/device_info.c`. The trainer

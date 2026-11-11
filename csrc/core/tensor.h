@@ -20,7 +20,7 @@ typedef enum { BLT_BACKEND_CPU = 0, BLT_BACKEND_CUDA = 1 } blt_backend;
 // validated for multi-GPU/NCCL.
 extern int g_blt_deterministic;
 
-typedef struct {
+typedef struct blt_tensor {
     void *data;
     size_t shape[BLT_MAX_NDIM];
     size_t strides[BLT_MAX_NDIM];
@@ -29,6 +29,13 @@ typedef struct {
     blt_dtype dtype;
     blt_backend backend;
     bool is_view;
+    // Optional per-tensor dequantization scale for FP8 data. The stored value
+    // is (original / scale) and must be multiplied by scale to recover it.
+    // NULL means 1.0 (and is the only valid value for non-FP8 tensors).
+    const struct blt_tensor *scale;
+    // Set when an FP8 shadow stores the transpose of its logical shape, so a
+    // [K, N] weight is held as [N, K] for the forward GEMM. Ignored otherwise.
+    bool transposed;
 } blt_tensor;
 
 size_t blt_tensor_compute_numel(const size_t *shape, size_t ndim);

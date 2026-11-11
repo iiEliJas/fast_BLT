@@ -45,6 +45,17 @@ const blt_device_spec *blt_device_table_entry(size_t i);
 blt_device_peaks blt_device_resolve(const char *device_name, blt_peak_dtype dtype, double tflops_override,
                                     double bandwidth_override);
 
+// Capability queries for the active CUDA device. Each returns 0 in CPU-only
+// builds and when no device is present, so callers can gate on them without
+// their own #ifdef.
+//
+// FP8 tensor cores: compute capability >= 8.9 (Ada and newer).
+// BF16 tensor cores: compute capability >= 8.0 (Ampere and newer).
+// FP16 tensor cores: compute capability >= 7.0 (Volta and newer).
+int blt_cuda_supports_fp8(void);
+int blt_cuda_supports_bf16(void);
+int blt_cuda_supports_fp16(void);
+
 // Formula helpers (pure, testable).
 // MFU = achieved_tflops / peak_tflops  (achieved in TFLOP/s).
 double blt_mfu(double achieved_tflops, double peak_tflops);

@@ -52,19 +52,19 @@ static void fill_params(float *w, const blt_param_info *info, void *ctx) {
     for (size_t i = 0; i < info->numel; i++) w[i] = info->is_norm ? 1.0f : fill_next(c);
 }
 
-static blt_model *make_model(blt_arena *arena, int use_bf16, uint64_t seed) {
+static blt_model *make_model(blt_arena *arena, blt_dtype mixed_dtype, uint64_t seed) {
     blt_model_config cfg;
     blt_model_config_defaults(&cfg, 16, 32, 1, 1, 1, 32, 0);
-    cfg.encoder_config.use_bf16 = use_bf16;
-    cfg.decoder_config.use_bf16 = use_bf16;
-    cfg.global_config.use_bf16 = use_bf16;
+    cfg.encoder_config.mixed_dtype = mixed_dtype;
+    cfg.decoder_config.mixed_dtype = mixed_dtype;
+    cfg.global_config.mixed_dtype = mixed_dtype;
 
     blt_model *m = blt_model_create(arena, &cfg);
     if (m == NULL) return NULL;
 
     fill_ctx c = {seed ? seed : 1};
     blt_model_visit_params(m, NULL, fill_params, &c, 0);
-    blt_model_refresh_bf16(m);
+    blt_model_refresh_mixed(m);
     return m;
 }
 
@@ -77,37 +77,39 @@ int run_bf16_refresh_tests(void) {
     blt_arena *arena = blt_arena_create(32u << 20, BLT_BACKEND_CPU);
     TEST_ASSERT(arena != NULL);
 
-    blt_model *m = make_model(arena, 1, 12345);
+    blt_model *m = make_model(arena, BLT_DTYPE_BF16, 12345);
     TEST_ASSERT(m != NULL);
 
-    TEST_ASSERT(m->encoder->layers_bf16 != NULL);
-    TEST_ASSERT(m->decoder->layers_bf16 != NULL);
-    TEST_ASSERT(m->global->stack.layer_weights_bf16 != NULL);
+    TEST_ASSERT(m->encoder->layers_mixed != NULL);
+    TEST_ASSERT(m->decoder->layers_mixed != NULL);
+    TEST_ASSERT(m->global->stack.layer_weights_shadow != NULL);
 
-    TEST_ASSERT(tensor_matches_bf16(&m->encoder->layers[0].attn_qkv_w, &m->encoder->layers_bf16[0].attn_qkv_w));
-    TEST_ASSERT(tensor_matches_bf16(&m->encoder->layers[0].cross_weight_q, &m->encoder->layers_bf16[0].cross_weight_q));
-    TEST_ASSERT(tensor_matches_bf16(&m->global->stack.layer_storage[0].ffn_down_w,
-                                    &m->global->stack.layer_storage[0].ffn_down_w_bf16));
-    TEST_ASSERT(tensor_matches_bf16(&m->decoder->layers[0].attn_proj_w, &m->decoder->layers_bf16[0].attn_proj_w));
+    TEST_ASSERT(tensor_matches_bf16(&m->encoder->layers[0].attn_qkv_w, &m->encoder->layers_mixed[0].attn_qkv_w));
     TEST_ASSERT(
-        tensor_matches_bf16(&m->decoder->layers[0].cross_weight_proj, &m->decoder->layers_bf16[0].cross_weight_proj));
+        tensor_matches_bf16(&m->encoder->layers[0].cross_weight_q, &m->encoder->layers_mixed[0].cross_weight_q));
+    TEST_ASSERT(tensor_matches_bf16(&m->global->stack.layer_storage[0].ffn_down_w,
+                                    &m->global->stack.layer_storage[0].ffn_down_w_mixed));
+    TEST_ASSERT(tensor_matches_bf16(&m->decoder->layers[0].attn_proj_w, &m->decoder->layers_mixed[0].attn_proj_w));
+    TEST_ASSERT(
+        tensor_matches_bf16(&m->decoder->layers[0].cross_weight_proj, &m->decoder->layers_mixed[0].cross_weight_proj));
 
     set_constant(&m->encoder->layers[0].ffn_up_w, -0.375f);
     set_constant(&m->global->stack.layer_storage[0].attn_qkv_w, 0.125f);
     set_constant(&m->decoder->layers[0].cross_weight_k, -0.0625f);
-    blt_model_refresh_bf16(m);
+    blt_model_refresh_mixed(m);
 
-    TEST_ASSERT(tensor_matches_bf16(&m->encoder->layers[0].ffn_up_w, &m->encoder->layers_bf16[0].ffn_up_w));
+    TEST_ASSERT(tensor_matches_bf16(&m->encoder->layers[0].ffn_up_w, &m->encoder->layers_mixed[0].ffn_up_w));
     TEST_ASSERT(tensor_matches_bf16(&m->global->stack.layer_storage[0].attn_qkv_w,
-                                    &m->global->stack.layer_storage[0].attn_qkv_w_bf16));
-    TEST_ASSERT(tensor_matches_bf16(&m->decoder->layers[0].cross_weight_k, &m->decoder->layers_bf16[0].cross_weight_k));
+                                    &m->global->stack.layer_storage[0].attn_qkv_w_mixed));
+    TEST_ASSERT(
+        tensor_matches_bf16(&m->decoder->layers[0].cross_weight_k, &m->decoder->layers_mixed[0].cross_weight_k));
 
-    blt_model *plain = make_model(arena, 0, 7);
+    blt_model *plain = make_model(arena, BLT_DTYPE_FP32, 7);
     TEST_ASSERT(plain != NULL);
-    TEST_ASSERT(plain->encoder->layers_bf16 == NULL);
-    TEST_ASSERT(plain->decoder->layers_bf16 == NULL);
-    TEST_ASSERT(plain->global->stack.layer_weights_bf16 == NULL);
-    blt_model_refresh_bf16(plain);
+    TEST_ASSERT(plain->encoder->layers_mixed == NULL);
+    TEST_ASSERT(plain->decoder->layers_mixed == NULL);
+    TEST_ASSERT(plain->global->stack.layer_weights_shadow == NULL);
+    blt_model_refresh_mixed(plain);
 
     blt_arena_destroy(arena);
     return 1;

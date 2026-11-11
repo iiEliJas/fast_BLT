@@ -2,6 +2,10 @@
 
 #include <string.h>
 
+#ifdef BLT_WITH_CUDA
+#include <cuda_runtime.h>
+#endif
+
 // Reference peaks. Values are theoretical dense peaks at boost clock; real
 // sustained throughput is lower (power, thermal and MIG/vGPU partitioning).
 // Sources:
@@ -104,3 +108,46 @@ double blt_mbu(double bytes_moved_gb, double time_s, double bandwidth_gbps) {
     double achieved_gbps = bytes_moved_gb / time_s;
     return achieved_gbps / bandwidth_gbps;
 }
+
+#ifdef BLT_WITH_CUDA
+// Cached per-process: the compute capability of the active device cannot
+// change once a context exists, and both queries are on the startup path.
+static int blt_cuda_compute_capability(int *major, int *minor) {
+    static int cached_major = -1, cached_minor = -1;
+    if (cached_major < 0) {
+        struct cudaDeviceProp prop;
+        if (cudaGetDeviceProperties(&prop, 0) != cudaSuccess) {
+            cached_major = 0;
+            cached_minor = 0;
+        } else {
+            cached_major = prop.major;
+            cached_minor = prop.minor;
+        }
+    }
+    *major = cached_major;
+    *minor = cached_minor;
+    return cached_major > 0;
+}
+
+int blt_cuda_supports_fp8(void) {
+    int major = 0, minor = 0;
+    if (!blt_cuda_compute_capability(&major, &minor)) return 0;
+    return (major > 8) || (major == 8 && minor >= 9);
+}
+
+int blt_cuda_supports_bf16(void) {
+    int major = 0, minor = 0;
+    if (!blt_cuda_compute_capability(&major, &minor)) return 0;
+    return major >= 8;
+}
+
+int blt_cuda_supports_fp16(void) {
+    int major = 0, minor = 0;
+    if (!blt_cuda_compute_capability(&major, &minor)) return 0;
+    return major >= 7;
+}
+#else
+int blt_cuda_supports_fp8(void) { return 0; }
+int blt_cuda_supports_bf16(void) { return 0; }
+int blt_cuda_supports_fp16(void) { return 0; }
+#endif

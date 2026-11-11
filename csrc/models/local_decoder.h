@@ -26,8 +26,8 @@ typedef struct {
     blt_xattn_placement cross_attn_placement; // sweep option; DEFAULT = use the bool above
     float rope_theta;
     size_t max_seq_len;
-    size_t vocab_size; // 256, for the LM head
-    bool use_bf16;     // allocate BF16 shadow copies of matmul weights
+    size_t vocab_size;     // 256, for the LM head
+    blt_dtype mixed_dtype; // shadow dtype for matmul weights (FP32 = none)
 } blt_local_decoder_config;
 
 // D_0 policy for rows without an encoder h_final state.
@@ -61,8 +61,10 @@ typedef struct {
     blt_local_decoder_config config;
     blt_tensor rope_cos_cache, rope_sin_cache;
     blt_local_decoder_layer_storage *layers; // [num_layers]
-    blt_local_layer_bf16 *layers_bf16;       // [num_layers], NULL when use_bf16 is false
+    blt_local_layer_mixed *layers_mixed;     // [num_layers], NULL when mixed_dtype is FP32
     blt_tensor lm_head_weight;               // [embed_dim, vocab_size]
+    blt_tensor lm_head_weight_mixed;         // same shape, shadow dtype (empty when mixed_dtype is FP32)
+    blt_tensor lm_head_weight_scale;         // per-tensor FP8 scale (empty otherwise)
     blt_tensor d0_embed_weight;              // [BLT_D0_VOCAB, embed_dim]
                                              // D_0 rows for draft/MASK positions
                                              // when d0_mode == BLT_D0_LEARNED.
@@ -84,9 +86,15 @@ blt_local_decoder *blt_local_decoder_create(blt_arena *arena, const blt_local_de
 
 blt_local_decoder_grad *blt_local_decoder_grad_create(blt_arena *arena, const blt_local_decoder *model);
 
-// Copies every layer's FP32 matmul weights into its BF16 shadow.
-// No-op when the model was not created with use_bf16.
-void blt_local_decoder_refresh_bf16(blt_local_decoder *model);
+// Matmul operand for the output projection: the shadow when the model has one,
+// the FP32 master otherwise.
+static inline const blt_tensor *blt_local_decoder_lm_head(const blt_local_decoder *model) {
+    return model->config.mixed_dtype != BLT_DTYPE_FP32 ? &model->lm_head_weight_mixed : &model->lm_head_weight;
+}
+
+// Copies every layer's FP32 matmul weights into its mixed-precision shadow.
+// No-op when the model was not created with shadows.
+void blt_local_decoder_refresh_mixed(blt_local_decoder *model);
 
 // doc_boundaries uses the mask-builder convention: entry[d] starts document
 // d+1 and document 0 starts implicitly at byte 0; num_docs is the document

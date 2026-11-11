@@ -32,6 +32,7 @@ report can still be useful.
 | E008 | What CUDA speedup and determinism cost does fBLT have? | Checked | CUDA provides 76x training and 34x generation speedup over the single-threaded CPU baseline at the production config. CUDA is non-deterministic unless `--deterministic` is used. | [docs/BENCHMARKS.md](BENCHMARKS.md) |
 | E009 | Where does training time go, and what should be optimized first? | Checked | Backward pass is ~50% of step time on CUDA (FP32 and BF16); top kernels are sgemm, patch-pool backward, and many memset/memcpy calls. | [docs/experiments/E009_backward_profile.md](experiments/E009_backward_profile.md) |
 | E010 | How much faster is BF16 than FP32 for GEMMs and full training steps, and does it stay numerically stable? | Checked | BF16 GEMMs are 2.2-3.2x FP32; end-to-end steps improve 1.5-3.9% because those steps are launch-bound and the weight-gradient GEMM and optimizer stay FP32. Loss tracks FP32 with no NaN/Inf. | [docs/experiments/E010_bf16_mixed_precision.md](experiments/E010_bf16_mixed_precision.md) |
+| E011 | Which FP8 GEMM recipes does cuBLASLt support on sm_89, and do FP16/FP8 training runs track FP32? | Checked | TN is the only FP8 orientation below Blackwell and E5M2 x E5M2 is not supported at all, so E5M2 weights run against E4M3 activations. FP8 reaches 1.75x FP32 GEMM throughput at n=2048 but 0.6x BF16; FP16 and FP8 loss track FP32 within 0.01 over short runs. | [docs/experiments/E011_fp8_mixed_precision.md](experiments/E011_fp8_mixed_precision.md) |
 
 ## Notes
 

@@ -182,17 +182,25 @@ blt_local_decoder *blt_local_decoder_create(blt_arena *arena, const blt_local_de
         blt_local_layer_storage_alloc(arena, &m->layers[l], E, hidden);
     }
 
-    m->layers_bf16 = NULL;
-    if (config->use_bf16) {
-        m->layers_bf16 =
-            (blt_local_layer_bf16 *)blt_container_alloc(arena, config->num_layers * sizeof(blt_local_layer_bf16));
+    m->layers_mixed = NULL;
+    if (config->mixed_dtype != BLT_DTYPE_FP32) {
+        m->layers_mixed =
+            (blt_local_layer_mixed *)blt_container_alloc(arena, config->num_layers * sizeof(blt_local_layer_mixed));
         for (size_t l = 0; l < config->num_layers; ++l) {
-            blt_local_layer_bf16_alloc(arena, &m->layers_bf16[l], E, hidden);
+            blt_local_layer_mixed_alloc(arena, &m->layers_mixed[l], E, hidden, config->mixed_dtype);
         }
     }
 
     size_t lm_head_shape[2] = {E, config->vocab_size};
     m->lm_head_weight = blt_tensor_create(arena, lm_head_shape, 2, BLT_DTYPE_FP32);
+    if (config->mixed_dtype != BLT_DTYPE_FP32) {
+        m->lm_head_weight_mixed = blt_tensor_create(arena, lm_head_shape, 2, config->mixed_dtype);
+        if (blt_dtype_is_fp8(config->mixed_dtype)) {
+            size_t one[1] = {1};
+            m->lm_head_weight_scale = blt_tensor_create(arena, one, 1, BLT_DTYPE_FP32);
+            m->lm_head_weight_mixed.scale = &m->lm_head_weight_scale;
+        }
+    }
 
     // D_0 table for draft/MASK rows (BLT_D0_LEARNED); zero-initialized.
     // The diffusion backward accumulates into d0_embed_grad; the legacy
@@ -203,12 +211,13 @@ blt_local_decoder *blt_local_decoder_create(blt_arena *arena, const blt_local_de
     return m;
 }
 
-void blt_local_decoder_refresh_bf16(blt_local_decoder *model) {
-    if (model == NULL || !model->config.use_bf16 || model->layers_bf16 == NULL) {
+void blt_local_decoder_refresh_mixed(blt_local_decoder *model) {
+    if (model == NULL || model->config.mixed_dtype == BLT_DTYPE_FP32 || model->layers_mixed == NULL) {
         return;
     }
+    blt_mixed_weight_refresh(&model->lm_head_weight_mixed, &model->lm_head_weight);
     for (size_t l = 0; l < model->config.num_layers; ++l) {
-        blt_local_layer_bf16_refresh(&model->layers_bf16[l], &model->layers[l]);
+        blt_local_layer_mixed_refresh(&model->layers_mixed[l], &model->layers[l]);
     }
 }
 
@@ -340,7 +349,7 @@ void blt_local_decoder_forward_ext(const blt_local_decoder *model, const blt_ten
     // layer loop: cross-attn, byte transformer block
     for (size_t l = 0; l < config->num_layers; ++l) {
         const blt_local_decoder_layer_storage *s = &model->layers[l];
-        const blt_local_layer_bf16 *bf = model->config.use_bf16 ? &model->layers_bf16[l] : NULL;
+        const blt_local_layer_mixed *bf = model->config.mixed_dtype != BLT_DTYPE_FP32 ? &model->layers_mixed[l] : NULL;
         blt_tensor b;
 
         if (blt_local_cross_attn_fires(config->cross_attn_placement, config->cross_attn_all_layers, config->num_layers,
@@ -365,7 +374,7 @@ void blt_local_decoder_forward_ext(const blt_local_decoder *model, const blt_ten
     }
 
     // LM head + optional shifted next-byte cross-entropy
-    blt_matmul(&d, &model->lm_head_weight, logits_out);
+    blt_matmul(&d, blt_local_decoder_lm_head(model), logits_out);
 
     if (loss_out != NULL) {
         const blt_tensor *ce_targets = (targets != NULL) ? targets : bytes_in;
@@ -452,7 +461,7 @@ void blt_local_decoder_backward(const blt_local_decoder *model, const blt_tensor
     for (size_t l = 0; l < L; ++l) {
         const blt_local_decoder_layer_storage *s = &model->layers[l];
         dec_layer_cache *c = &caches[l];
-        const blt_local_layer_bf16 *bf = model->config.use_bf16 ? &model->layers_bf16[l] : NULL;
+        const blt_local_layer_mixed *bf = model->config.mixed_dtype != BLT_DTYPE_FP32 ? &model->layers_mixed[l] : NULL;
         c->d_in = d[l];
 
         blt_tensor b;
@@ -481,7 +490,7 @@ void blt_local_decoder_backward(const blt_local_decoder *model, const blt_tensor
 
     // LM head, recomputed to obtain the terminal gradient
     blt_tensor logits = blt_tensor_create(arena, logits_shape, 2, BLT_DTYPE_FP32);
-    blt_matmul(&d[L], &model->lm_head_weight, &logits);
+    blt_matmul(&d[L], blt_local_decoder_lm_head(model), &logits);
 
     blt_tensor logits_view;
     blt_tensor_view_2d(&logits_view, logits.data, seq_len - 1, V, logits.backend);
@@ -501,7 +510,7 @@ void blt_local_decoder_backward(const blt_local_decoder *model, const blt_tensor
                      seq_len - 1, V);
 
     blt_tensor dh = blt_tensor_create(arena, byte_shape, 2, BLT_DTYPE_FP32);
-    blt_matmul_backward(&d[L], &model->lm_head_weight, &grad_logits, &dh, &grad->lm_head_grad);
+    blt_matmul_backward(&d[L], blt_local_decoder_lm_head(model), &grad_logits, &dh, &grad->lm_head_grad);
 
     // Reverse layer loop.
     //   dh - running dL/d(d[l+1]), starts at dL/d(d[L])
@@ -512,7 +521,7 @@ void blt_local_decoder_backward(const blt_local_decoder *model, const blt_tensor
         const blt_local_decoder_layer_storage *s = &model->layers[li];
         blt_local_decoder_layer_grad *lg = &grad->layer_grads[li];
         const dec_layer_cache *c = &caches[li];
-        const blt_local_layer_bf16 *b = model->config.use_bf16 ? &model->layers_bf16[li] : NULL;
+        const blt_local_layer_mixed *b = model->config.mixed_dtype != BLT_DTYPE_FP32 ? &model->layers_mixed[li] : NULL;
 
         // byte transformer block backward: dh becomes dL/d(b) for this layer
         blt_transformer_weights w = blt_local_byte_weights_view_mixed(s, b);

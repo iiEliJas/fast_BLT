@@ -7,6 +7,7 @@ extern "C" {
 
 #include "core/tensor.h"
 #include "core/allocator.h"
+#include "core/dtype.h"
 #include "models/attention.h"
 
 // normalization the block uses. RMSNorm has no bias term, so
@@ -34,7 +35,11 @@ typedef struct {
     float layer_norm_eps; // used only when norm_type == BLT_NORM_LAYERNORM
     blt_norm_type norm_type;
     blt_activation_type activation_type;
-    int use_bf16; // 1 = use bf16 weight copies for matmul (mixed precision)
+    // Dtype of the matmul-weight shadows the caller substitutes into
+    // blt_transformer_weights. FP32 means "no shadows". BF16/FP16 shadows hold
+    // the same values at lower precision; FP8 shadows carry a per-tensor scale
+    // in blt_tensor.scale. Norm weights and all activations stay FP32.
+    blt_dtype mixed_dtype;
 } blt_transformer_config;
 
 // All learned weights for one block. Fields whose relevance depends on
@@ -51,16 +56,6 @@ typedef struct {
     const blt_tensor *ffn_down_w;
 } blt_transformer_weights;
 
-// NULL when use_bf16 is disabled. Only matmul-participating
-// weights get bf16 copies; norm weights stay fp32.
-typedef struct {
-    const blt_tensor *attn_qkv_w;
-    const blt_tensor *attn_proj_w;
-    const blt_tensor *ffn_up_w;
-    const blt_tensor *ffn_gate_w;
-    const blt_tensor *ffn_down_w;
-} blt_transformer_weights_bf16;
-
 // Owned storage for one transformer layer's weights. A parallel
 // blt_transformer_weights entry (of const pointers into this struct) is
 // what actually gets passed to blt_transformer_forward.
@@ -72,16 +67,18 @@ typedef struct {
     blt_tensor ffn_up_w;
     blt_tensor ffn_gate_w;
     blt_tensor ffn_down_w;
-    blt_tensor attn_qkv_w_bf16;
-    blt_tensor attn_proj_w_bf16;
-    blt_tensor ffn_up_w_bf16;
-    blt_tensor ffn_gate_w_bf16;
-    blt_tensor ffn_down_w_bf16;
-    blt_tensor attn_qkv_w_fp8;
-    blt_tensor attn_proj_w_fp8;
-    blt_tensor ffn_up_w_fp8;
-    blt_tensor ffn_gate_w_fp8;
-    blt_tensor ffn_down_w_fp8;
+    // Mixed-precision shadows (empty when mixed_dtype is FP32). The *_scale
+    // entries are the per-tensor FP8 scales the shadows point at.
+    blt_tensor attn_qkv_w_mixed;
+    blt_tensor attn_proj_w_mixed;
+    blt_tensor ffn_up_w_mixed;
+    blt_tensor ffn_gate_w_mixed;
+    blt_tensor ffn_down_w_mixed;
+    blt_tensor attn_qkv_w_scale;
+    blt_tensor attn_proj_w_scale;
+    blt_tensor ffn_up_w_scale;
+    blt_tensor ffn_gate_w_scale;
+    blt_tensor ffn_down_w_scale;
 } blt_transformer_layer_storage;
 
 typedef struct {
@@ -100,13 +97,11 @@ typedef struct {
 void blt_transformer_forward(const blt_tensor *input, const blt_transformer_weights *weights, blt_tensor *output,
                              const blt_transformer_config *config, blt_arena *arena);
 
-// Returns a zeroed struct when use_bf16 is disabled.
-blt_transformer_weights_bf16 blt_transformer_layer_bf16_view(const blt_transformer_layer_storage *s, int use_bf16);
-
-// Refresh bf16 weight copies from their fp32 masters.
-// Must be called once per training step after the optimizer update
-// and before the next forward pass.
-void blt_mixed_weight_refresh(blt_tensor *bf16_copy, const blt_tensor *fp32_master);
+// Refresh one shadow from its FP32 master. BF16/FP16 shadow -> cast; FP8
+// shadow -> amax-derived per-tensor scale (written to shadow->scale) plus
+// quantization. Must run once per step, after the optimizer update and before
+// the next forward pass, or the shadow silently goes stale.
+void blt_mixed_weight_refresh(blt_tensor *shadow, const blt_tensor *fp32_master);
 
 #ifdef __cplusplus
 }

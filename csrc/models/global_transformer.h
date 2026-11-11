@@ -22,9 +22,8 @@ typedef struct {
     size_t hidden_dim; // FFN width
     size_t num_heads;
     float rope_theta;
-    size_t max_seq_len; // max on num_patches
-    bool use_bf16;      // mixed-precision matmuls via bf16 weight copies
-    bool use_fp8;       // mixed-precision matmuls via fp8 weight copies
+    size_t max_seq_len;    // max on num_patches
+    blt_dtype mixed_dtype; // shadow dtype for matmul weights (FP32 = none)
 } blt_global_transformer_config;
 
 typedef struct {

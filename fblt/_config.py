@@ -75,6 +75,7 @@ class TrainConfig:
     deterministic: bool = False
     bf16: bool = False
     dtype: str = "fp32"
+    fp8_format: str = "e4m3"
     fp8: bool = False
     flash_attn: bool = False
 

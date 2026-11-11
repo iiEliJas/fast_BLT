@@ -8,24 +8,21 @@
 #include "ops/swiglu.h"
 #include "ops/rope.h"
 #include "ops/cast.h"
+#include "ops/quant.h"
 
-blt_transformer_weights_bf16 blt_transformer_layer_bf16_view(const blt_transformer_layer_storage *s, int use_bf16) {
-    blt_transformer_weights_bf16 w = {0};
-    if (!use_bf16) return w;
-    w.attn_qkv_w = &s->attn_qkv_w_bf16;
-    w.attn_proj_w = &s->attn_proj_w_bf16;
-    w.ffn_up_w = &s->ffn_up_w_bf16;
-    w.ffn_gate_w = &s->ffn_gate_w_bf16;
-    w.ffn_down_w = &s->ffn_down_w_bf16;
-    return w;
-}
+void blt_mixed_weight_refresh(blt_tensor *shadow, const blt_tensor *fp32_master) {
+    BLT_REQUIRE(shadow != NULL && fp32_master != NULL,
+                "blt_mixed_weight_refresh: shadow and fp32_master must not be NULL");
+    BLT_REQUIRE(shadow->numel == fp32_master->numel,
+                "blt_mixed_weight_refresh: shadow and fp32_master must have same numel");
+    BLT_REQUIRE(shadow->dtype != BLT_DTYPE_FP32, "blt_mixed_weight_refresh: shadow must be a narrow dtype");
 
-void blt_mixed_weight_refresh(blt_tensor *bf16_copy, const blt_tensor *fp32_master) {
-    BLT_REQUIRE(bf16_copy != NULL && fp32_master != NULL,
-                "blt_mixed_weight_refresh: bf16_copy and fp32_master must not be NULL");
-    BLT_REQUIRE(bf16_copy->numel == fp32_master->numel,
-                "blt_mixed_weight_refresh: bf16_copy and fp32_master must have same numel");
-    blt_cast(fp32_master, bf16_copy);
+    if (blt_dtype_is_fp8(shadow->dtype)) {
+        BLT_REQUIRE(shadow->scale != NULL, "blt_mixed_weight_refresh: FP8 shadow needs a scale tensor");
+        blt_fp8_quantize_scaled(fp32_master, shadow->dtype, 1e-30f, shadow);
+        return;
+    }
+    blt_cast(fp32_master, shadow);
 }
 
 void blt_transformer_stack_init(blt_arena *arena, blt_transformer_stack *stack,
@@ -75,23 +72,18 @@ void blt_transformer_stack_init(blt_arena *arena, blt_transformer_stack *stack,
     stack->layer_config.layer_norm_eps = 1e-6f; // not used by RMSNorm
     stack->layer_config.norm_type = BLT_NORM_RMSNORM;
     stack->layer_config.activation_type = BLT_ACTIVATION_SWIGLU;
-    stack->layer_config.use_bf16 = config->use_bf16;
-    stack->use_bf16 = config->use_bf16;
-    stack->use_fp8 = config->use_fp8;
+    stack->layer_config.mixed_dtype = config->mixed_dtype;
+    stack->mixed_dtype = config->mixed_dtype;
 
     stack->layer_storage = (blt_transformer_layer_storage *)blt_container_alloc(
         arena, config->num_layers * sizeof(blt_transformer_layer_storage));
     stack->layer_weights =
         (blt_transformer_weights *)blt_container_alloc(arena, config->num_layers * sizeof(blt_transformer_weights));
 
-    stack->layer_weights_bf16 = NULL;
-    if (config->use_bf16) {
-        stack->layer_weights_bf16 = (blt_transformer_weights_bf16 *)blt_container_alloc(
-            arena, config->num_layers * sizeof(blt_transformer_weights_bf16));
-    }
-    stack->layer_weights_fp8 = NULL;
-    if (config->use_fp8) {
-        stack->layer_weights_fp8 =
+    const int shadows = config->mixed_dtype != BLT_DTYPE_FP32;
+    stack->layer_weights_shadow = NULL;
+    if (shadows) {
+        stack->layer_weights_shadow =
             (blt_transformer_weights *)blt_container_alloc(arena, config->num_layers * sizeof(blt_transformer_weights));
     }
 
@@ -115,19 +107,26 @@ void blt_transformer_stack_init(blt_arena *arena, blt_transformer_stack *stack,
         size_t ffn_down_shape[2] = {hidden_dim, embed_dim};
         s->ffn_down_w = blt_tensor_create(arena, ffn_down_shape, 2, BLT_DTYPE_FP32);
 
-        if (config->use_bf16) {
-            s->attn_qkv_w_bf16 = blt_tensor_create(arena, qkv_shape, 2, BLT_DTYPE_BF16);
-            s->attn_proj_w_bf16 = blt_tensor_create(arena, proj_shape, 2, BLT_DTYPE_BF16);
-            s->ffn_up_w_bf16 = blt_tensor_create(arena, ffn_up_shape, 2, BLT_DTYPE_BF16);
-            s->ffn_gate_w_bf16 = blt_tensor_create(arena, ffn_up_shape, 2, BLT_DTYPE_BF16);
-            s->ffn_down_w_bf16 = blt_tensor_create(arena, ffn_down_shape, 2, BLT_DTYPE_BF16);
-        }
-        if (config->use_fp8) {
-            s->attn_qkv_w_fp8 = blt_tensor_create(arena, qkv_shape, 2, BLT_DTYPE_FP8_E4M3);
-            s->attn_proj_w_fp8 = blt_tensor_create(arena, proj_shape, 2, BLT_DTYPE_FP8_E4M3);
-            s->ffn_up_w_fp8 = blt_tensor_create(arena, ffn_up_shape, 2, BLT_DTYPE_FP8_E4M3);
-            s->ffn_gate_w_fp8 = blt_tensor_create(arena, ffn_up_shape, 2, BLT_DTYPE_FP8_E4M3);
-            s->ffn_down_w_fp8 = blt_tensor_create(arena, ffn_down_shape, 2, BLT_DTYPE_FP8_E4M3);
+        if (shadows) {
+            const blt_dtype md = config->mixed_dtype;
+            s->attn_qkv_w_mixed = blt_tensor_create(arena, qkv_shape, 2, md);
+            s->attn_proj_w_mixed = blt_tensor_create(arena, proj_shape, 2, md);
+            s->ffn_up_w_mixed = blt_tensor_create(arena, ffn_up_shape, 2, md);
+            s->ffn_gate_w_mixed = blt_tensor_create(arena, ffn_up_shape, 2, md);
+            s->ffn_down_w_mixed = blt_tensor_create(arena, ffn_down_shape, 2, md);
+            if (blt_dtype_is_fp8(md)) {
+                size_t one[1] = {1};
+                s->attn_qkv_w_scale = blt_tensor_create(arena, one, 1, BLT_DTYPE_FP32);
+                s->attn_proj_w_scale = blt_tensor_create(arena, one, 1, BLT_DTYPE_FP32);
+                s->ffn_up_w_scale = blt_tensor_create(arena, one, 1, BLT_DTYPE_FP32);
+                s->ffn_gate_w_scale = blt_tensor_create(arena, one, 1, BLT_DTYPE_FP32);
+                s->ffn_down_w_scale = blt_tensor_create(arena, one, 1, BLT_DTYPE_FP32);
+                s->attn_qkv_w_mixed.scale = &s->attn_qkv_w_scale;
+                s->attn_proj_w_mixed.scale = &s->attn_proj_w_scale;
+                s->ffn_up_w_mixed.scale = &s->ffn_up_w_scale;
+                s->ffn_gate_w_mixed.scale = &s->ffn_gate_w_scale;
+                s->ffn_down_w_mixed.scale = &s->ffn_down_w_scale;
+            }
         }
 
         blt_transformer_weights *w = &stack->layer_weights[l];
@@ -141,20 +140,16 @@ void blt_transformer_stack_init(blt_arena *arena, blt_transformer_stack *stack,
         w->ffn_gate_w = &s->ffn_gate_w;
         w->ffn_down_w = &s->ffn_down_w;
 
-        if (config->use_bf16) {
-            stack->layer_weights_bf16[l] = blt_transformer_layer_bf16_view(s, 1);
-        }
-        if (config->use_fp8) {
-            blt_transformer_weights *wfp = &stack->layer_weights_fp8[l];
-            wfp->norm1_weight = &s->norm1_weight;
-            wfp->norm1_bias = NULL;
-            wfp->attn_qkv_w = &s->attn_qkv_w_fp8;
-            wfp->attn_proj_w = &s->attn_proj_w_fp8;
-            wfp->norm2_weight = &s->norm2_weight;
-            wfp->norm2_bias = NULL;
-            wfp->ffn_up_w = &s->ffn_up_w_fp8;
-            wfp->ffn_gate_w = &s->ffn_gate_w_fp8;
-            wfp->ffn_down_w = &s->ffn_down_w_fp8;
+        if (shadows) {
+            // Same weight view as the masters, with the narrow matmul weights
+            // swapped in. Norm weights keep pointing at the FP32 masters.
+            blt_transformer_weights *ws = &stack->layer_weights_shadow[l];
+            *ws = *w;
+            ws->attn_qkv_w = &s->attn_qkv_w_mixed;
+            ws->attn_proj_w = &s->attn_proj_w_mixed;
+            ws->ffn_up_w = &s->ffn_up_w_mixed;
+            ws->ffn_gate_w = &s->ffn_gate_w_mixed;
+            ws->ffn_down_w = &s->ffn_down_w_mixed;
         }
     }
 }
@@ -213,16 +208,12 @@ blt_transformer_config blt_transformer_stack_call_config(const blt_transformer_s
     return cfg;
 }
 
-// norm weights stay fp32 — bf16 only accelerates matmul
-static blt_transformer_weights bf16_weights_view(const blt_transformer_weights *w,
-                                                 const blt_transformer_weights_bf16 *w_bf16) {
-    blt_transformer_weights bw = *w;
-    if (w_bf16->attn_qkv_w) bw.attn_qkv_w = w_bf16->attn_qkv_w;
-    if (w_bf16->attn_proj_w) bw.attn_proj_w = w_bf16->attn_proj_w;
-    if (w_bf16->ffn_up_w) bw.ffn_up_w = w_bf16->ffn_up_w;
-    if (w_bf16->ffn_gate_w) bw.ffn_gate_w = w_bf16->ffn_gate_w;
-    if (w_bf16->ffn_down_w) bw.ffn_down_w = w_bf16->ffn_down_w;
-    return bw;
+// Weight view for one layer: shadows when the stack has them, masters otherwise.
+static const blt_transformer_weights *layer_weights_for(const blt_transformer_stack *stack, size_t l) {
+    if (stack->layer_weights_shadow != NULL) {
+        return &stack->layer_weights_shadow[l];
+    }
+    return &stack->layer_weights[l];
 }
 
 void blt_transformer_stack_forward(const blt_transformer_stack *stack, const blt_tensor *x,
@@ -235,13 +226,7 @@ void blt_transformer_stack_forward(const blt_transformer_stack *stack, const blt
     blt_tensor cur = *x;
     for (size_t l = 0; l < stack->num_layers; ++l) {
         blt_tensor next = blt_tensor_create(arena, embed_shape, 2, BLT_DTYPE_FP32);
-        const blt_transformer_weights *w = &stack->layer_weights[l];
-        blt_transformer_weights bf16_w;
-        if (stack->use_bf16 && stack->layer_weights_bf16) {
-            bf16_w = bf16_weights_view(w, &stack->layer_weights_bf16[l]);
-            w = &bf16_w;
-        }
-        blt_transformer_forward(&cur, w, &next, call_cfg, arena);
+        blt_transformer_forward(&cur, layer_weights_for(stack, l), &next, call_cfg, arena);
         cur = next;
     }
     *out = cur;
@@ -370,12 +355,7 @@ blt_transformer_stack_cache *blt_transformer_stack_forward_cached(const blt_tran
     blt_tensor cur = *x;
     for (size_t l = 0; l < stack->num_layers; ++l) {
         blt_tensor next;
-        const blt_transformer_weights *w = &stack->layer_weights[l];
-        blt_transformer_weights bf16_w;
-        if (stack->use_bf16 && stack->layer_weights_bf16) {
-            bf16_w = bf16_weights_view(w, &stack->layer_weights_bf16[l]);
-            w = &bf16_w;
-        }
+        const blt_transformer_weights *w = layer_weights_for(stack, l);
         cache->layers[l] = blt_transformer_layer_forward_cached(&cur, w, call_cfg, arena, seq_len, stack->embed_dim,
                                                                 stack->hidden_dim, &next);
         cur = next;
@@ -397,39 +377,23 @@ void blt_transformer_stack_backward(const blt_transformer_stack *stack, const bl
     for (size_t i = 0; i < stack->num_layers; ++i) {
         size_t l = stack->num_layers - 1 - i; // walk layers in reverse
         blt_tensor grad_prev;
-        const blt_transformer_weights *w = &stack->layer_weights[l];
-        blt_transformer_weights bf16_w;
-        if (stack->use_bf16 && stack->layer_weights_bf16) {
-            bf16_w = bf16_weights_view(w, &stack->layer_weights_bf16[l]);
-            w = &bf16_w;
-        }
-        blt_transformer_layer_backward(cache->layers[l], w, call_cfg, arena, seq_len, stack->embed_dim,
-                                       stack->hidden_dim, &g, &grad->layer_grads[l], &grad_prev);
+        blt_transformer_layer_backward(cache->layers[l], layer_weights_for(stack, l), call_cfg, arena, seq_len,
+                                       stack->embed_dim, stack->hidden_dim, &g, &grad->layer_grads[l], &grad_prev);
         g = grad_prev;
     }
     *grad_x = g;
 }
 
-void blt_transformer_stack_refresh_bf16(blt_transformer_stack *stack) {
-    if (!stack || !stack->use_bf16) return;
-    for (size_t l = 0; l < stack->num_layers; l++) {
-        blt_transformer_layer_storage *s = &stack->layer_storage[l];
-        blt_mixed_weight_refresh(&s->attn_qkv_w_bf16, &s->attn_qkv_w);
-        blt_mixed_weight_refresh(&s->attn_proj_w_bf16, &s->attn_proj_w);
-        blt_mixed_weight_refresh(&s->ffn_up_w_bf16, &s->ffn_up_w);
-        blt_mixed_weight_refresh(&s->ffn_gate_w_bf16, &s->ffn_gate_w);
-        blt_mixed_weight_refresh(&s->ffn_down_w_bf16, &s->ffn_down_w);
+void blt_transformer_stack_refresh_mixed(blt_transformer_stack *stack) {
+    if (stack == NULL || stack->layer_weights_shadow == NULL) {
+        return;
     }
-}
-
-void blt_transformer_stack_refresh_fp8(blt_transformer_stack *stack) {
-    if (!stack || !stack->use_fp8 || !stack->layer_weights_fp8) return;
-    for (size_t l = 0; l < stack->num_layers; l++) {
+    for (size_t l = 0; l < stack->num_layers; ++l) {
         blt_transformer_layer_storage *s = &stack->layer_storage[l];
-        blt_cast(&s->attn_qkv_w, &s->attn_qkv_w_fp8);
-        blt_cast(&s->attn_proj_w, &s->attn_proj_w_fp8);
-        blt_cast(&s->ffn_up_w, &s->ffn_up_w_fp8);
-        blt_cast(&s->ffn_gate_w, &s->ffn_gate_w_fp8);
-        blt_cast(&s->ffn_down_w, &s->ffn_down_w_fp8);
+        blt_mixed_weight_refresh(&s->attn_qkv_w_mixed, &s->attn_qkv_w);
+        blt_mixed_weight_refresh(&s->attn_proj_w_mixed, &s->attn_proj_w);
+        blt_mixed_weight_refresh(&s->ffn_up_w_mixed, &s->ffn_up_w);
+        blt_mixed_weight_refresh(&s->ffn_gate_w_mixed, &s->ffn_gate_w);
+        blt_mixed_weight_refresh(&s->ffn_down_w_mixed, &s->ffn_down_w);
     }
 }
