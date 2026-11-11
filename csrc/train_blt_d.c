@@ -307,10 +307,6 @@ static size_t blt_param_bytes(const blt_model *model) {
     return n;
 }
 
-static void refresh_fp8_weights(const blt_model *model) {
-    if (model && model->global) blt_transformer_stack_refresh_fp8(&model->global->stack);
-}
-
 int main(int argc, char **argv) {
     args_t a = parse_args(argc, argv);
     if (a.grad_accum < 1) {
@@ -360,12 +356,26 @@ int main(int argc, char **argv) {
                "--backend\n");
         a.use_cuda = 0;
     }
-    if (a.bf16 && !a.use_cuda) {
-        fprintf(stderr, "train_blt_d: --bf16/--dtype bf16 requires --backend cuda\n");
+    // Resolve the requested matmul dtype once: --fp8-format only refines an
+    // FP8 request, and every later use reads mixed_dtype.
+    const blt_dtype mixed_dtype =
+        (a.mixed_dtype == BLT_DTYPE_FP8_E4M3 && a.fp8_e5m2) ? BLT_DTYPE_FP8_E5M2 : a.mixed_dtype;
+    if (mixed_dtype != BLT_DTYPE_FP32 && !a.use_cuda) {
+        fprintf(stderr, "train_blt_d: --dtype %s requires --backend cuda (the CPU path has no low-precision GEMM)\n",
+                blt_dtype_name(mixed_dtype));
         return 1;
     }
-    if (a.fp8 && !a.use_cuda) {
-        fprintf(stderr, "train_blt_d: --fp8 requires --backend cuda\n");
+    if (blt_dtype_is_fp8(mixed_dtype) && !blt_cuda_supports_fp8()) {
+        fprintf(stderr, "train_blt_d: --dtype %s requires a device with compute capability >= 8.9 (Ada or newer)\n",
+                blt_dtype_name(mixed_dtype));
+        return 1;
+    }
+    if (mixed_dtype == BLT_DTYPE_BF16 && !blt_cuda_supports_bf16()) {
+        fprintf(stderr, "train_blt_d: --dtype bf16 requires a device with compute capability >= 8.0\n");
+        return 1;
+    }
+    if (mixed_dtype == BLT_DTYPE_FP16 && !blt_cuda_supports_fp16()) {
+        fprintf(stderr, "train_blt_d: --dtype fp16 requires a device with compute capability >= 7.0\n");
         return 1;
     }
     const blt_backend dev = a.use_cuda ? BLT_BACKEND_CUDA : BLT_BACKEND_CPU;
@@ -377,7 +387,8 @@ int main(int argc, char **argv) {
     const char *device_name = NULL;
     const double tflops_override = (double)a.peak_tflops;
     const double bw_override = (double)a.peak_bandwidth;
-    const blt_peak_dtype peak_dtype = a.fp8 ? BLT_PEAK_FP8 : (a.bf16 ? BLT_PEAK_BF16 : BLT_PEAK_FP32);
+    const blt_peak_dtype peak_dtype =
+        blt_dtype_is_fp8(mixed_dtype) ? BLT_PEAK_FP8 : (mixed_dtype == BLT_DTYPE_FP32 ? BLT_PEAK_FP32 : BLT_PEAK_BF16);
 #ifdef BLT_WITH_CUDA
     if (a.use_cuda) {
         struct cudaDeviceProp prop;
@@ -399,8 +410,9 @@ int main(int argc, char **argv) {
                     ? "using explicit --peak-tflops/--peak-bandwidth overrides"
                     : "pass --peak-tflops/--peak-bandwidth to report MFU/MBU");
     }
-    const char *const peak_dtype_name = a.fp8 ? "fp8" : (a.bf16 ? "bf16" : "fp32");
-    const char *const dtype_name = a.bf16 ? "bf16" : (a.fp8 ? "fp8" : "fp32");
+    const char *const peak_dtype_name =
+        blt_dtype_is_fp8(mixed_dtype) ? "fp8" : (mixed_dtype == BLT_DTYPE_FP32 ? "fp32" : "bf16");
+    const char *const dtype_name = blt_dtype_name(mixed_dtype);
     g_blt_deterministic = a.deterministic;
 #ifdef BLT_WITH_CUDA
     if (a.use_cuda && a.cuda_scratch_mb > 0) blt_cuda_set_scratch_size(a.cuda_scratch_mb * 1024ULL * 1024);
@@ -446,12 +458,9 @@ int main(int argc, char **argv) {
 
     blt_model_config cfg;
     blt_model_config_defaults(&cfg, a.embed, a.hidden, a.enc_layers, a.glob_layers, a.dec_layers, MS, a.cross_last);
-    if (a.bf16) {
-        cfg.encoder_config.use_bf16 = 1;
-        cfg.decoder_config.use_bf16 = 1;
-        cfg.global_config.use_bf16 = 1;
-    }
-    if (a.fp8) cfg.global_config.use_fp8 = 1;
+    cfg.encoder_config.mixed_dtype = mixed_dtype;
+    cfg.decoder_config.mixed_dtype = mixed_dtype;
+    cfg.global_config.mixed_dtype = mixed_dtype;
 
     blt_model *model = blt_model_create(model_arena, &cfg);
 
@@ -666,8 +675,7 @@ int main(int argc, char **argv) {
 #undef RAND01
     }
 
-    blt_model_refresh_bf16(model);
-    refresh_fp8_weights(model);
+    blt_model_refresh_mixed(model);
 
     const size_t n_params = blt_count_params(model);
     printf("train_blt_d: mode=%s corpus=%s (%ld bytes) steps=%zu grad_accum=%zu lr=%.4g B=%zu W=%zu "
@@ -976,8 +984,7 @@ int main(int argc, char **argv) {
         }
         // The optimizer mutated the FP32 masters; rebuild every low-precision
         // shadow so the next forward (report, monitor, eval) reads current weights.
-        blt_model_refresh_bf16(model);
-        refresh_fp8_weights(model);
+        blt_model_refresh_mixed(model);
         if (metrics_fp) {
             fprintf(metrics_fp, "{\"event\":\"train\",\"step\":%zu,\"loss\":%.6f,\"lr\":%.6g,\"grad_norm\":%.6f}\n",
                     step + 1, last_loss, (double)lr, (double)pre_clip_norm);

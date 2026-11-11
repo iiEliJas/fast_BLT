@@ -23,7 +23,8 @@ static void usage(void) {
                     "                          per optimizer step (default 1)\n"
                     "  --seed S                RNG seed (default 7)\n"
                     "  --backend cpu|cuda      backend (default cpu)\n"
-                    "  --dtype fp32|bf16       weight/activation precision (default fp32); --bf16 is an alias\n"
+                    "  --dtype fp32|bf16|fp16|fp8  matmul precision (default fp32); CUDA only for non-fp32\n"
+                    "  --fp8-format e4m3|e5m2  FP8 encoding for --dtype fp8 (default e4m3)\n"
                     "  --cuda-scratch-mb N     CUDA kernel scratch pool size in MB\n"
                     "  --scratch-mb N           trainer scratch arena size in MB; 0 derives it from --window\n"
                     "                          (see docs/CLI_REFERENCE.md for the memory cost of long windows)\n"
@@ -161,7 +162,8 @@ args_t parse_args(int argc, char **argv) {
                 .loss_log = NULL,
                 .metrics_log = NULL,
                 .deterministic = 0,
-                .bf16 = 0,
+                .mixed_dtype = BLT_DTYPE_FP32,
+                .fp8_e5m2 = 0,
                 .flash_attn = 0,
                 .cuda_scratch_mb = 0,
                 .scratch_mb = 0,
@@ -288,14 +290,24 @@ args_t parse_args(int argc, char **argv) {
         else if (!strcmp(argv[i], "--deterministic")) a.deterministic = 1;
         else if (!strcmp(argv[i], "--dtype") && i + 1 < argc) {
             ++i;
-            if (!strcmp(argv[i], "bf16")) a.bf16 = 1;
-            else if (!strcmp(argv[i], "fp32")) a.bf16 = 0;
+            if (!strcmp(argv[i], "fp32")) a.mixed_dtype = BLT_DTYPE_FP32;
+            else if (!strcmp(argv[i], "bf16")) a.mixed_dtype = BLT_DTYPE_BF16;
+            else if (!strcmp(argv[i], "fp16")) a.mixed_dtype = BLT_DTYPE_FP16;
+            else if (!strcmp(argv[i], "fp8")) a.mixed_dtype = BLT_DTYPE_FP8_E4M3;
             else {
-                fprintf(stderr, "train_blt_d: unknown --dtype '%s' (expected fp32 or bf16)\n", argv[i]);
+                fprintf(stderr, "train_blt_d: unknown --dtype '%s' (expected fp32, bf16, fp16 or fp8)\n", argv[i]);
                 usage();
             }
-        } else if (!strcmp(argv[i], "--bf16")) a.bf16 = 1;
-        else if (!strcmp(argv[i], "--fp8")) a.fp8 = 1;
+        } else if (!strcmp(argv[i], "--fp8-format") && i + 1 < argc) {
+            ++i;
+            if (!strcmp(argv[i], "e4m3")) a.fp8_e5m2 = 0;
+            else if (!strcmp(argv[i], "e5m2")) a.fp8_e5m2 = 1;
+            else {
+                fprintf(stderr, "train_blt_d: unknown --fp8-format '%s' (expected e4m3 or e5m2)\n", argv[i]);
+                usage();
+            }
+        } else if (!strcmp(argv[i], "--bf16")) a.mixed_dtype = BLT_DTYPE_BF16;
+        else if (!strcmp(argv[i], "--fp8")) a.mixed_dtype = BLT_DTYPE_FP8_E4M3;
         else if (!strcmp(argv[i], "--flash-attn")) a.flash_attn = 1;
         else {
             usage();
