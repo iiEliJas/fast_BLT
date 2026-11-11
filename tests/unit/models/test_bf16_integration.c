@@ -215,6 +215,29 @@ int run_bf16_integration_tests(void) {
 
     TEST_ASSERT(checkpoint_roundtrip(bf16));
 
+    // FP16 and both FP8 encodings run the same optimizer loop on the CPU path.
+    // Only the matmul operands are narrowed, so the loss may drift but must not
+    // diverge from the FP32 trajectory.
+    static const blt_dtype lowp_dtypes[] = {BLT_DTYPE_FP16, BLT_DTYPE_FP8_E4M3, BLT_DTYPE_FP8_E5M2};
+    for (size_t di = 0; di < sizeof(lowp_dtypes) / sizeof(lowp_dtypes[0]); ++di) {
+        blt_arena *arena = blt_arena_create(48u << 20, BLT_BACKEND_CPU);
+        TEST_ASSERT(arena != NULL);
+        blt_model *lowp = make_model(arena, lowp_dtypes[di], 4242);
+        TEST_ASSERT(lowp != NULL);
+
+        float lowp_losses[16];
+        TEST_ASSERT(run_steps(lowp, steps, lowp_losses));
+        for (size_t i = 0; i < steps; ++i) {
+            const float tol = 0.05f + 0.01f * fabsf(fp32_losses[i]);
+            if (fabsf(fp32_losses[i] - lowp_losses[i]) > tol) {
+                fprintf(stderr, "  %s step %zu: fp32 %.4f vs %.4f\n", blt_dtype_name(lowp_dtypes[di]), i,
+                        (double)fp32_losses[i], (double)lowp_losses[i]);
+            }
+            TEST_ASSERT(fabsf(fp32_losses[i] - lowp_losses[i]) <= tol);
+        }
+        blt_arena_destroy(arena);
+    }
+
     blt_arena_destroy(bf16_arena);
     blt_arena_destroy(fp32_arena);
     return 1;

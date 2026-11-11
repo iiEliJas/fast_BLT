@@ -52,24 +52,28 @@ static float max_abs(const float *v, size_t n) {
     return m;
 }
 
-// Builds a transposed FP8 weight shadow [N,K] from an FP32 [K,N] master.
-// The scale tensor is stored in the arena so shadow.scale stays valid after
-// this helper returns.
-static blt_tensor make_fp8_weight(blt_arena *arena, const blt_tensor *w_f32, blt_dtype fmt) {
-    size_t shape[2] = {w_f32->shape[1], w_f32->shape[0]};
+// Builds an FP8 weight shadow from an FP32 [K,N] master. `transposed` selects
+// the physical layout: set means [N,K] with the transposed flag, clear means
+// the model's own layout, a plain [K,N] shadow that the matmul transposes into
+// scratch per call. The scale tensor is stored in the arena so shadow.scale
+// stays valid after this helper returns.
+static blt_tensor make_fp8_weight(blt_arena *arena, const blt_tensor *w_f32, blt_dtype fmt, int transposed) {
+    size_t shape[2] = {transposed ? w_f32->shape[1] : w_f32->shape[0], transposed ? w_f32->shape[0] : w_f32->shape[1]};
     blt_tensor shadow = blt_tensor_create(arena, shape, 2, fmt);
     size_t s1[1] = {1};
     blt_tensor amax = blt_tensor_create(arena, s1, 1, BLT_DTYPE_FP32);
     blt_tensor scale = blt_tensor_create(arena, s1, 1, BLT_DTYPE_FP32);
     blt_amax(w_f32, &amax);
     blt_quant_scale(&amax, blt_fp8_max(fmt), 1e-30f, &scale);
-    blt_fp8_quantize(w_f32, &scale, &shadow, 1);
+    blt_fp8_quantize(w_f32, &scale, &shadow, transposed);
     blt_tensor *scale_slot = (blt_tensor *)blt_container_alloc(arena, sizeof(blt_tensor));
     *scale_slot = scale;
     shadow.scale = scale_slot;
-    shadow.transposed = true;
+    shadow.transposed = transposed != 0;
     return shadow;
 }
+
+static const blt_dtype k_fp8_formats[] = {BLT_DTYPE_FP8_E4M3, BLT_DTYPE_FP8_E5M2};
 
 int run_matmul_dtypes_tests(void) {
     blt_arena *arena = blt_arena_create(4 * 1024 * 1024, BLT_BACKEND_CPU);
@@ -100,89 +104,98 @@ int run_matmul_dtypes_tests(void) {
         TEST_ASSERT_CLOSE(&out, &ref, 1e-6f);
     }
 
-    // ---- FP8 forward through a transposed weight shadow ----
-    {
-        blt_tensor a = rand_2d(arena, M, K, BLT_DTYPE_FP32);
-        blt_tensor w = rand_2d(arena, K, N, BLT_DTYPE_FP32);
-        blt_tensor shadow = make_fp8_weight(arena, &w, BLT_DTYPE_FP8_E4M3);
+    // ---- FP8 forward, both encodings, both weight layouts ----
+    for (size_t fi = 0; fi < sizeof(k_fp8_formats) / sizeof(k_fp8_formats[0]); ++fi) {
+        for (int transposed = 0; transposed <= 1; ++transposed) {
+            const blt_dtype fmt = k_fp8_formats[fi];
+            const blt_dtype dyn_fmt = blt_fp8_pair_fmt(fmt);
+            blt_tensor a = rand_2d(arena, M, K, BLT_DTYPE_FP32);
+            blt_tensor w = rand_2d(arena, K, N, BLT_DTYPE_FP32);
+            blt_tensor shadow = make_fp8_weight(arena, &w, fmt, transposed);
 
-        size_t os[2] = {M, N};
-        blt_tensor out = blt_tensor_create(arena, os, 2, BLT_DTYPE_FP32);
-        blt_matmul(&a, &shadow, &out);
+            size_t os[2] = {M, N};
+            blt_tensor out = blt_tensor_create(arena, os, 2, BLT_DTYPE_FP32);
+            blt_matmul(&a, &shadow, &out);
 
-        // Emulated reference: quantize the activation, dequantize the weight.
-        blt_tensor amax = blt_tensor_create(arena, (size_t[]){1}, 1, BLT_DTYPE_FP32);
-        blt_tensor scale = blt_tensor_create(arena, (size_t[]){1}, 1, BLT_DTYPE_FP32);
-        blt_amax(&a, &amax);
-        blt_quant_scale(&amax, blt_fp8_max(BLT_DTYPE_FP8_E4M3), 1e-30f, &scale);
-        blt_tensor aq = blt_tensor_create(arena, (size_t[]){M, K}, 2, BLT_DTYPE_FP32);
-        blt_fp8_roundtrip(&a, &scale, BLT_DTYPE_FP8_E4M3, &aq);
-        blt_tensor w_dq = blt_tensor_create(arena, (size_t[]){K, N}, 2, BLT_DTYPE_FP32);
-        blt_fp8_dequantize(&shadow, shadow.scale, &w_dq, 1);
+            // Emulated reference: quantize the activation with the pairing rule,
+            // dequantize the weight -- exactly what the CUDA path feeds cuBLASLt.
+            blt_tensor amax = blt_tensor_create(arena, (size_t[]){1}, 1, BLT_DTYPE_FP32);
+            blt_tensor scale = blt_tensor_create(arena, (size_t[]){1}, 1, BLT_DTYPE_FP32);
+            blt_amax(&a, &amax);
+            blt_quant_scale(&amax, blt_fp8_max(dyn_fmt), 1e-30f, &scale);
+            blt_tensor aq = blt_tensor_create(arena, (size_t[]){M, K}, 2, BLT_DTYPE_FP32);
+            blt_fp8_roundtrip(&a, &scale, dyn_fmt, &aq);
+            blt_tensor w_dq = blt_tensor_create(arena, (size_t[]){K, N}, 2, BLT_DTYPE_FP32);
+            blt_fp8_dequantize(&shadow, shadow.scale, &w_dq, transposed);
 
-        blt_tensor ref = blt_tensor_create(arena, (size_t[]){M, N}, 2, BLT_DTYPE_FP32);
-        ref_matmul((const float *)aq.data, (const float *)w_dq.data, (float *)ref.data, M, K, N);
-        TEST_ASSERT_CLOSE(&out, &ref, 1e-5f);
+            blt_tensor ref = blt_tensor_create(arena, (size_t[]){M, N}, 2, BLT_DTYPE_FP32);
+            ref_matmul((const float *)aq.data, (const float *)w_dq.data, (float *)ref.data, M, K, N);
+            TEST_ASSERT_CLOSE(&out, &ref, 1e-5f);
 
-        // ... and within FP8 quantization error of the unquantized product.
-        blt_tensor exact = blt_tensor_create(arena, (size_t[]){M, N}, 2, BLT_DTYPE_FP32);
-        ref_matmul((const float *)a.data, (const float *)w.data, (float *)exact.data, M, K, N);
-        float lim = 0.15f * fmaxf(1.0f, max_abs((const float *)exact.data, M * N));
-        TEST_ASSERT_CLOSE(&out, &exact, lim);
+            // ... and within FP8 quantization error of the unquantized product.
+            blt_tensor exact = blt_tensor_create(arena, (size_t[]){M, N}, 2, BLT_DTYPE_FP32);
+            ref_matmul((const float *)a.data, (const float *)w.data, (float *)exact.data, M, K, N);
+            float lim = 0.15f * fmaxf(1.0f, max_abs((const float *)exact.data, M * N));
+            TEST_ASSERT_CLOSE(&out, &exact, lim);
+        }
     }
 
-    // ---- FP8 backward ----
-    {
-        blt_tensor a = rand_2d(arena, M, K, BLT_DTYPE_FP32);
-        blt_tensor w = rand_2d(arena, K, N, BLT_DTYPE_FP32);
-        blt_tensor go = rand_2d(arena, M, N, BLT_DTYPE_FP32);
-        blt_tensor shadow = make_fp8_weight(arena, &w, BLT_DTYPE_FP8_E4M3);
+    // ---- FP8 backward, both encodings, both weight layouts ----
+    for (size_t fi = 0; fi < sizeof(k_fp8_formats) / sizeof(k_fp8_formats[0]); ++fi) {
+        for (int transposed = 0; transposed <= 1; ++transposed) {
+            const blt_dtype fmt = k_fp8_formats[fi];
+            const blt_dtype dyn_fmt = blt_fp8_pair_fmt(fmt);
+            blt_tensor a = rand_2d(arena, M, K, BLT_DTYPE_FP32);
+            blt_tensor w = rand_2d(arena, K, N, BLT_DTYPE_FP32);
+            blt_tensor go = rand_2d(arena, M, N, BLT_DTYPE_FP32);
+            blt_tensor shadow = make_fp8_weight(arena, &w, fmt, transposed);
 
-        blt_tensor ga = blt_tensor_create(arena, (size_t[]){M, K}, 2, BLT_DTYPE_FP32);
-        blt_tensor gb = blt_tensor_create(arena, (size_t[]){K, N}, 2, BLT_DTYPE_FP32);
-        blt_matmul_backward(&a, &shadow, &go, &ga, &gb);
+            blt_tensor ga = blt_tensor_create(arena, (size_t[]){M, K}, 2, BLT_DTYPE_FP32);
+            blt_tensor gb = blt_tensor_create(arena, (size_t[]){K, N}, 2, BLT_DTYPE_FP32);
+            blt_matmul_backward(&a, &shadow, &go, &ga, &gb);
 
-        // Reference from the same quantized operands.
-        blt_tensor aq = blt_tensor_create(arena, (size_t[]){M, K}, 2, BLT_DTYPE_FP32);
-        blt_tensor gq = blt_tensor_create(arena, (size_t[]){M, N}, 2, BLT_DTYPE_FP32);
-        blt_tensor w_dq = blt_tensor_create(arena, (size_t[]){K, N}, 2, BLT_DTYPE_FP32);
-        blt_tensor amax = blt_tensor_create(arena, (size_t[]){1}, 1, BLT_DTYPE_FP32);
-        blt_tensor scale = blt_tensor_create(arena, (size_t[]){1}, 1, BLT_DTYPE_FP32);
+            // Reference from the same quantized operands.
+            blt_tensor aq = blt_tensor_create(arena, (size_t[]){M, K}, 2, BLT_DTYPE_FP32);
+            blt_tensor gq = blt_tensor_create(arena, (size_t[]){M, N}, 2, BLT_DTYPE_FP32);
+            blt_tensor w_dq = blt_tensor_create(arena, (size_t[]){K, N}, 2, BLT_DTYPE_FP32);
+            blt_tensor amax = blt_tensor_create(arena, (size_t[]){1}, 1, BLT_DTYPE_FP32);
+            blt_tensor scale = blt_tensor_create(arena, (size_t[]){1}, 1, BLT_DTYPE_FP32);
 
-        blt_amax(&a, &amax);
-        blt_quant_scale(&amax, blt_fp8_max(BLT_DTYPE_FP8_E4M3), 1e-30f, &scale);
-        blt_fp8_roundtrip(&a, &scale, BLT_DTYPE_FP8_E4M3, &aq);
-        blt_amax(&go, &amax);
-        blt_quant_scale(&amax, blt_fp8_max(BLT_DTYPE_FP8_E4M3), 1e-30f, &scale);
-        blt_fp8_roundtrip(&go, &scale, BLT_DTYPE_FP8_E4M3, &gq);
-        blt_fp8_dequantize(&shadow, shadow.scale, &w_dq, 1);
+            blt_amax(&a, &amax);
+            blt_quant_scale(&amax, blt_fp8_max(dyn_fmt), 1e-30f, &scale);
+            blt_fp8_roundtrip(&a, &scale, dyn_fmt, &aq);
+            blt_amax(&go, &amax);
+            blt_quant_scale(&amax, blt_fp8_max(dyn_fmt), 1e-30f, &scale);
+            blt_fp8_roundtrip(&go, &scale, dyn_fmt, &gq);
+            blt_fp8_dequantize(&shadow, shadow.scale, &w_dq, transposed);
 
-        // grad_a = G @ W^T
-        blt_tensor ref_ga = blt_tensor_create(arena, (size_t[]){M, K}, 2, BLT_DTYPE_FP32);
-        const float *g = (const float *)gq.data;
-        const float *wd = (const float *)w_dq.data;
-        float *rga = (float *)ref_ga.data;
-        for (size_t r = 0; r < M; ++r) {
-            for (size_t c = 0; c < K; ++c) {
-                double acc = 0.0;
-                for (size_t i = 0; i < N; ++i) acc += (double)g[r * N + i] * (double)wd[c * N + i];
-                rga[r * K + c] = (float)acc;
+            // grad_a = G @ W^T
+            blt_tensor ref_ga = blt_tensor_create(arena, (size_t[]){M, K}, 2, BLT_DTYPE_FP32);
+            const float *g = (const float *)gq.data;
+            const float *wd = (const float *)w_dq.data;
+            float *rga = (float *)ref_ga.data;
+            for (size_t r = 0; r < M; ++r) {
+                for (size_t c = 0; c < K; ++c) {
+                    double acc = 0.0;
+                    for (size_t i = 0; i < N; ++i) acc += (double)g[r * N + i] * (double)wd[c * N + i];
+                    rga[r * K + c] = (float)acc;
+                }
             }
-        }
-        // grad_b = A^T @ G
-        blt_tensor ref_gb = blt_tensor_create(arena, (size_t[]){K, N}, 2, BLT_DTYPE_FP32);
-        const float *aqd = (const float *)aq.data;
-        float *rgb = (float *)ref_gb.data;
-        memset(rgb, 0, K * N * sizeof(float));
-        for (size_t r = 0; r < M; ++r) {
-            for (size_t c = 0; c < K; ++c) {
-                float av = aqd[r * K + c];
-                for (size_t i = 0; i < N; ++i) rgb[c * N + i] += av * g[r * N + i];
+            // grad_b = A^T @ G
+            blt_tensor ref_gb = blt_tensor_create(arena, (size_t[]){K, N}, 2, BLT_DTYPE_FP32);
+            const float *aqd = (const float *)aq.data;
+            float *rgb = (float *)ref_gb.data;
+            memset(rgb, 0, K * N * sizeof(float));
+            for (size_t r = 0; r < M; ++r) {
+                for (size_t c = 0; c < K; ++c) {
+                    float av = aqd[r * K + c];
+                    for (size_t i = 0; i < N; ++i) rgb[c * N + i] += av * g[r * N + i];
+                }
             }
-        }
 
-        TEST_ASSERT_CLOSE(&ga, &ref_ga, 1e-5f);
-        TEST_ASSERT_CLOSE(&gb, &ref_gb, 1e-5f);
+            TEST_ASSERT_CLOSE(&ga, &ref_ga, 1e-5f);
+            TEST_ASSERT_CLOSE(&gb, &ref_gb, 1e-5f);
+        }
     }
 
     // ---- Ineligible shape falls back to dequantize + FP32 ----
@@ -190,7 +203,7 @@ int run_matmul_dtypes_tests(void) {
         const size_t KM = 8;
         blt_tensor a = rand_2d(arena, M, KM, BLT_DTYPE_FP32);
         blt_tensor w = rand_2d(arena, KM, N, BLT_DTYPE_FP32);
-        blt_tensor shadow = make_fp8_weight(arena, &w, BLT_DTYPE_FP8_E4M3);
+        blt_tensor shadow = make_fp8_weight(arena, &w, BLT_DTYPE_FP8_E4M3, 1);
 
         blt_tensor out = blt_tensor_create(arena, (size_t[]){M, N}, 2, BLT_DTYPE_FP32);
         blt_matmul(&a, &shadow, &out);

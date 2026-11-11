@@ -179,6 +179,13 @@ int run_quant_tests(void) {
         }
     }
 
+    // ---- Dynamic-operand encoding paired with a weight encoding ----
+    {
+        TEST_ASSERT(blt_fp8_pair_fmt(BLT_DTYPE_FP8_E4M3) == BLT_DTYPE_FP8_E4M3);
+        TEST_ASSERT(blt_fp8_pair_fmt(BLT_DTYPE_FP8_E5M2) == BLT_DTYPE_FP8_E4M3);
+        TEST_ASSERT(blt_fp8_pair_fmt(BLT_DTYPE_BF16) == BLT_DTYPE_BF16);
+    }
+
     // ---- FP8 GEMM eligibility gate ----
     {
         TEST_ASSERT(blt_fp8_matmul_eligible(64, 64, 64) == 1);

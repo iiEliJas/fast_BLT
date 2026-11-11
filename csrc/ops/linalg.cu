@@ -151,12 +151,26 @@ static int blt_ptr_16b(const void *p) { return (((uintptr_t)p) & 15u) == 0; }
 // C[m,n] = A_slot^T @ B_slot with A_slot [n,k] and B_slot [m,k], both row-major
 // FP8. This is the only orientation cuBLASLt exposes for FP8 on pre-Blackwell
 // parts, and it covers forward and both gradient GEMMs.
+// E5M2 weights pair with an E4M3 dynamic operand; there is no E5M2xE5M2 kernel
+// before Blackwell, so that combination falls back to dequantize + SGEMM.
+static int blt_fp8_pair_ok(blt_dtype a_dt, blt_dtype b_dt) {
+    return !(a_dt == BLT_DTYPE_FP8_E5M2 && b_dt == BLT_DTYPE_FP8_E5M2);
+}
+
+static cudaDataType_t blt_cuda_fp8_dtype(blt_dtype dt) {
+    return dt == BLT_DTYPE_FP8_E5M2 ? CUDA_R_8F_E5M2 : CUDA_R_8F_E4M3;
+}
+
 static void blt_fp8_gemm(const blt_tensor *a_slot, const float *a_scale, const blt_tensor *b_slot, const float *b_scale,
-                         void *out, int m, int k, int n, int e5m2) {
+                         void *out, int m, int k, int n) {
     cublasLtHandle_t lt = blt_cublaslt_handle();
     cublasLtMatmulDesc_t desc = NULL;
     cublasLtMatrixLayout_t la = NULL, lb = NULL, lc = NULL;
-    const cudaDataType_t dt = e5m2 ? CUDA_R_8F_E5M2 : CUDA_R_8F_E4M3;
+    // Each side carries its own encoding: E5M2 weights run against E4M3
+    // activations, and the reverse pairing is equally legal for the reverse
+    // orientation used by the gradient GEMMs.
+    const cudaDataType_t dt_a = blt_cuda_fp8_dtype(a_slot->dtype);
+    const cudaDataType_t dt_b = blt_cuda_fp8_dtype(b_slot->dtype);
 
     blt_cublas_check(cublasLtMatmulDescCreate(&desc, CUBLAS_COMPUTE_32F, CUDA_R_32F), "cublasLtMatmulDescCreate");
     cublasOperation_t op_t = CUBLAS_OP_T, op_n = CUBLAS_OP_N;
@@ -171,8 +185,8 @@ static void blt_fp8_gemm(const blt_tensor *a_slot, const float *a_scale, const b
         cublasLtMatmulDescSetAttribute(desc, CUBLASLT_MATMUL_DESC_B_SCALE_POINTER, &b_scale, sizeof(b_scale)),
         "cublasLt desc B scale");
 
-    blt_cublas_check(cublasLtMatrixLayoutCreate(&la, dt, k, n, k), "cublasLt layout A");
-    blt_cublas_check(cublasLtMatrixLayoutCreate(&lb, dt, k, m, k), "cublasLt layout B");
+    blt_cublas_check(cublasLtMatrixLayoutCreate(&la, dt_a, k, n, k), "cublasLt layout A");
+    blt_cublas_check(cublasLtMatrixLayoutCreate(&lb, dt_b, k, m, k), "cublasLt layout B");
     blt_cublas_check(cublasLtMatrixLayoutCreate(&lc, CUDA_R_32F, n, m, n), "cublasLt layout C");
 
     // An unaligned destination is staged through scratch and copied back; the
@@ -232,13 +246,16 @@ extern "C" void blt_matmul_cuda(const blt_tensor *a, const blt_tensor *b, blt_te
 
     if (a_fp8 || b_fp8) {
         const blt_dtype fmt = b_fp8 ? b->dtype : a->dtype;
+        const blt_dtype dyn_fmt = blt_fp8_pair_fmt(fmt);
+        const blt_dtype w_dt = b_fp8 ? b->dtype : fmt;
+        const blt_dtype a_dt = a_fp8 ? a->dtype : dyn_fmt;
         // The activation operand is quantized into aligned scratch, so only the
         // weight pointer can be off; a misaligned destination is staged instead.
-        if (b_fp8 && a->dtype == BLT_DTYPE_FP32 && blt_fp8_matmul_eligible(m, k, n) && blt_ptr_16b(b->data)) {
-            blt_fp8_operand aq = blt_as_fp8(a, fmt, 0);
+        if (b_fp8 && a->dtype == BLT_DTYPE_FP32 && blt_fp8_matmul_eligible(m, k, n) && blt_ptr_16b(b->data) &&
+            blt_fp8_pair_ok(w_dt, a_dt)) {
+            blt_fp8_operand aq = blt_as_fp8(a, dyn_fmt, 0);
             blt_fp8_operand wq = blt_as_fp8(b, fmt, 1);
-            blt_fp8_gemm(&wq.data, wq.scale, &aq.data, aq.scale, out->data, (int)m, (int)k, (int)n,
-                         fmt == BLT_DTYPE_FP8_E5M2);
+            blt_fp8_gemm(&wq.data, wq.scale, &aq.data, aq.scale, out->data, (int)m, (int)k, (int)n);
             return;
         }
         blt_tensor a_store = {0}, b_store = {0};
@@ -297,14 +314,16 @@ extern "C" void blt_matmul_backward_cuda(const blt_tensor *a, const blt_tensor *
 
     if (a_fp8 || b_fp8) {
         const blt_dtype fmt = b_fp8 ? b->dtype : a->dtype;
-        const int e5m2 = fmt == BLT_DTYPE_FP8_E5M2;
+        const blt_dtype dyn_fmt = blt_fp8_pair_fmt(fmt);
+        const blt_dtype w_dt = b_fp8 ? b->dtype : fmt;
 
         if (grad_a != NULL) {
-            const int fast = b_fp8 && blt_fp8_matmul_eligible(m, n, k) && blt_ptr_16b(b->data);
+            const int fast =
+                b_fp8 && blt_fp8_matmul_eligible(m, n, k) && blt_ptr_16b(b->data) && blt_fp8_pair_ok(w_dt, dyn_fmt);
             blt_fp8_operand wq = blt_as_fp8(b, fmt, 0);
             if (fast) {
-                blt_fp8_operand gq = blt_as_fp8(grad_out, fmt, 0);
-                blt_fp8_gemm(&wq.data, wq.scale, &gq.data, gq.scale, grad_a->data, (int)m, (int)n, (int)k, e5m2);
+                blt_fp8_operand gq = blt_as_fp8(grad_out, dyn_fmt, 0);
+                blt_fp8_gemm(&wq.data, wq.scale, &gq.data, gq.scale, grad_a->data, (int)m, (int)n, (int)k);
             } else {
                 blt_tensor w_store = {0}, g_store = {0};
                 const blt_tensor *w_use = blt_to_f32(b, &w_store);
@@ -317,11 +336,14 @@ extern "C" void blt_matmul_backward_cuda(const blt_tensor *a, const blt_tensor *
         }
 
         if (grad_b != NULL) {
-            const int fast = b_fp8 && blt_fp8_matmul_eligible(k, m, n) && blt_ptr_16b(a->data);
-            blt_fp8_operand gt = blt_as_fp8(grad_out, fmt, 1);
-            blt_fp8_operand at = blt_as_fp8(a, fmt, 1);
+            const blt_dtype g_dt = dyn_fmt;
+            const blt_dtype acc_dt = a_fp8 ? a->dtype : dyn_fmt;
+            const int fast =
+                b_fp8 && blt_fp8_matmul_eligible(k, m, n) && blt_ptr_16b(a->data) && blt_fp8_pair_ok(g_dt, acc_dt);
+            blt_fp8_operand gt = blt_as_fp8(grad_out, dyn_fmt, 1);
+            blt_fp8_operand at = blt_as_fp8(a, dyn_fmt, 1);
             if (fast) {
-                blt_fp8_gemm(&gt.data, gt.scale, &at.data, at.scale, grad_b->data, (int)k, (int)m, (int)n, e5m2);
+                blt_fp8_gemm(&gt.data, gt.scale, &at.data, at.scale, grad_b->data, (int)k, (int)m, (int)n);
             } else {
                 blt_tensor a_store = {0}, g_store = {0};
                 const blt_tensor *a_use = blt_to_f32(a, &a_store);

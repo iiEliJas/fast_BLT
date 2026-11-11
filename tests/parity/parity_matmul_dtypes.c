@@ -84,51 +84,59 @@ int run_cuda_parity_matmul_dtypes(void) {
         TEST_ASSERT_CLOSE(&g_gb, &h_gb, 1e-3f);
     }
 
-    // ---- FP8 forward and backward through a transposed weight shadow ----
-    {
-        blt_tensor a = rand_2d(host, M, K, BLT_DTYPE_FP32);
-        blt_tensor w = rand_2d(host, K, N, BLT_DTYPE_FP32);
-        blt_tensor go = rand_2d(host, M, N, BLT_DTYPE_FP32);
+    // ---- FP8 forward and backward, both encodings and both weight layouts ----
+    // E5M2 weights pair with E4M3 activations (no E5M2xE5M2 kernel on pre-Blackwell),
+    // so the CPU ground truth has to narrow the dynamic operand the same way.
+    static const blt_dtype formats[] = {BLT_DTYPE_FP8_E4M3, BLT_DTYPE_FP8_E5M2};
+    for (size_t fi = 0; fi < sizeof(formats) / sizeof(formats[0]); ++fi) {
+        for (int transposed = 0; transposed <= 1; ++transposed) {
+            const blt_dtype fmt = formats[fi];
+            blt_tensor a = rand_2d(host, M, K, BLT_DTYPE_FP32);
+            blt_tensor w = rand_2d(host, K, N, BLT_DTYPE_FP32);
+            blt_tensor go = rand_2d(host, M, N, BLT_DTYPE_FP32);
 
-        blt_tensor shadow = blt_tensor_create(host, (size_t[]){N, K}, 2, BLT_DTYPE_FP8_E4M3);
-        blt_tensor amax = blt_tensor_create(host, (size_t[]){1}, 1, BLT_DTYPE_FP32);
-        blt_tensor scale = blt_tensor_create(host, (size_t[]){1}, 1, BLT_DTYPE_FP32);
-        blt_amax(&w, &amax);
-        blt_quant_scale(&amax, blt_fp8_max(BLT_DTYPE_FP8_E4M3), 1e-30f, &scale);
-        blt_fp8_quantize(&w, &scale, &shadow, 1);
-        shadow.scale = &scale;
-        shadow.transposed = true;
+            const size_t srows = transposed ? N : K;
+            const size_t scols = transposed ? K : N;
+            blt_tensor shadow = blt_tensor_create(host, (size_t[]){srows, scols}, 2, fmt);
+            blt_tensor amax = blt_tensor_create(host, (size_t[]){1}, 1, BLT_DTYPE_FP32);
+            blt_tensor scale = blt_tensor_create(host, (size_t[]){1}, 1, BLT_DTYPE_FP32);
+            blt_amax(&w, &amax);
+            blt_quant_scale(&amax, blt_fp8_max(fmt), 1e-30f, &scale);
+            blt_fp8_quantize(&w, &scale, &shadow, transposed);
+            shadow.scale = &scale;
+            shadow.transposed = transposed != 0;
 
-        blt_tensor h_out = blt_tensor_create(host, (size_t[]){M, N}, 2, BLT_DTYPE_FP32);
-        blt_tensor h_ga = blt_tensor_create(host, (size_t[]){M, K}, 2, BLT_DTYPE_FP32);
-        blt_tensor h_gb = blt_tensor_create(host, (size_t[]){K, N}, 2, BLT_DTYPE_FP32);
-        blt_matmul(&a, &shadow, &h_out);
-        blt_matmul_backward(&a, &shadow, &go, &h_ga, &h_gb);
+            blt_tensor h_out = blt_tensor_create(host, (size_t[]){M, N}, 2, BLT_DTYPE_FP32);
+            blt_tensor h_ga = blt_tensor_create(host, (size_t[]){M, K}, 2, BLT_DTYPE_FP32);
+            blt_tensor h_gb = blt_tensor_create(host, (size_t[]){K, N}, 2, BLT_DTYPE_FP32);
+            blt_matmul(&a, &shadow, &h_out);
+            blt_matmul_backward(&a, &shadow, &go, &h_ga, &h_gb);
 
-        blt_tensor d_a = blt_tensor_create(dev, (size_t[]){M, K}, 2, BLT_DTYPE_FP32);
-        blt_tensor d_go = blt_tensor_create(dev, (size_t[]){M, N}, 2, BLT_DTYPE_FP32);
-        blt_tensor d_shadow = blt_tensor_create(dev, (size_t[]){N, K}, 2, BLT_DTYPE_FP8_E4M3);
-        blt_tensor d_scale = blt_tensor_create(dev, (size_t[]){1}, 1, BLT_DTYPE_FP32);
-        upload(&d_a, &a);
-        upload(&d_go, &go);
-        upload(&d_shadow, &shadow);
-        upload(&d_scale, &scale);
-        d_shadow.scale = &d_scale;
-        d_shadow.transposed = true;
+            blt_tensor d_a = blt_tensor_create(dev, (size_t[]){M, K}, 2, BLT_DTYPE_FP32);
+            blt_tensor d_go = blt_tensor_create(dev, (size_t[]){M, N}, 2, BLT_DTYPE_FP32);
+            blt_tensor d_shadow = blt_tensor_create(dev, (size_t[]){srows, scols}, 2, fmt);
+            blt_tensor d_scale = blt_tensor_create(dev, (size_t[]){1}, 1, BLT_DTYPE_FP32);
+            upload(&d_a, &a);
+            upload(&d_go, &go);
+            upload(&d_shadow, &shadow);
+            upload(&d_scale, &scale);
+            d_shadow.scale = &d_scale;
+            d_shadow.transposed = transposed != 0;
 
-        blt_tensor d_out = blt_tensor_create(dev, (size_t[]){M, N}, 2, BLT_DTYPE_FP32);
-        blt_tensor d_ga = blt_tensor_create(dev, (size_t[]){M, K}, 2, BLT_DTYPE_FP32);
-        blt_tensor d_gb = blt_tensor_create(dev, (size_t[]){K, N}, 2, BLT_DTYPE_FP32);
-        blt_matmul(&d_a, &d_shadow, &d_out);
-        blt_matmul_backward(&d_a, &d_shadow, &d_go, &d_ga, &d_gb);
+            blt_tensor d_out = blt_tensor_create(dev, (size_t[]){M, N}, 2, BLT_DTYPE_FP32);
+            blt_tensor d_ga = blt_tensor_create(dev, (size_t[]){M, K}, 2, BLT_DTYPE_FP32);
+            blt_tensor d_gb = blt_tensor_create(dev, (size_t[]){K, N}, 2, BLT_DTYPE_FP32);
+            blt_matmul(&d_a, &d_shadow, &d_out);
+            blt_matmul_backward(&d_a, &d_shadow, &d_go, &d_ga, &d_gb);
 
-        blt_tensor g_out = blt_tensor_to_host(&d_out, host);
-        blt_tensor g_ga = blt_tensor_to_host(&d_ga, host);
-        blt_tensor g_gb = blt_tensor_to_host(&d_gb, host);
+            blt_tensor g_out = blt_tensor_to_host(&d_out, host);
+            blt_tensor g_ga = blt_tensor_to_host(&d_ga, host);
+            blt_tensor g_gb = blt_tensor_to_host(&d_gb, host);
 
-        TEST_ASSERT_CLOSE(&g_out, &h_out, 2e-2f);
-        TEST_ASSERT_CLOSE(&g_ga, &h_ga, 2e-2f);
-        TEST_ASSERT_CLOSE(&g_gb, &h_gb, 2e-2f);
+            TEST_ASSERT_CLOSE(&g_out, &h_out, 2e-2f);
+            TEST_ASSERT_CLOSE(&g_ga, &h_ga, 2e-2f);
+            TEST_ASSERT_CLOSE(&g_gb, &h_gb, 2e-2f);
+        }
     }
 
     blt_arena_destroy(dev);

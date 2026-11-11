@@ -91,7 +91,7 @@ static void matmul_fp8_cpu(const blt_tensor *a, const blt_tensor *b, blt_tensor 
 
     if (b_fp8 && a->dtype == BLT_DTYPE_FP32 && blt_fp8_matmul_eligible(m, k, n)) {
         // CUDA tensor-core path: quantize the activation, dequantize the weight.
-        a_store = cpu_fp8_roundtrip(a, b->dtype, ar);
+        a_store = cpu_fp8_roundtrip(a, blt_fp8_pair_fmt(b->dtype), ar);
         b_store = cpu_fp8_to_f32(b, ar);
         a_use = &a_store;
         b_use = &b_store;
@@ -203,6 +203,7 @@ static void matmul_backward_fp8_cpu(const blt_tensor *a, const blt_tensor *b, co
     const int a_fp8 = blt_dtype_is_fp8(a->dtype);
     const int b_fp8 = blt_dtype_is_fp8(b->dtype);
     const blt_dtype fmt = b_fp8 ? b->dtype : a->dtype;
+    const blt_dtype dyn_fmt = blt_fp8_pair_fmt(fmt);
 
     blt_arena *ar = cpu_quant_arena();
     blt_arena_reset(ar);
@@ -221,7 +222,7 @@ static void matmul_backward_fp8_cpu(const blt_tensor *a, const blt_tensor *b, co
             w_use = &w_store;
         }
         if (b_fp8 && blt_fp8_matmul_eligible(M, N, K)) {
-            g_store = cpu_fp8_roundtrip(grad_out, fmt, ar);
+            g_store = cpu_fp8_roundtrip(grad_out, dyn_fmt, ar);
             g_use = &g_store;
         }
         grad_a_fp32((const float *)g_use->data, (const float *)w_use->data, (float *)grad_a->data, M, K, N);
@@ -241,11 +242,11 @@ static void matmul_backward_fp8_cpu(const blt_tensor *a, const blt_tensor *b, co
             a_store = cpu_lowp_to_f32(a, ar);
             a_use = &a_store;
         } else if (fast) {
-            a_store = cpu_fp8_roundtrip(a, fmt, ar);
+            a_store = cpu_fp8_roundtrip(a, dyn_fmt, ar);
             a_use = &a_store;
         }
         if (fast) {
-            g_store = cpu_fp8_roundtrip(grad_out, fmt, ar);
+            g_store = cpu_fp8_roundtrip(grad_out, dyn_fmt, ar);
             g_use = &g_store;
         }
         grad_b_fp32((const float *)a_use->data, (const float *)g_use->data, (float *)grad_b->data, M, K, N);

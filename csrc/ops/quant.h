@@ -43,6 +43,14 @@ void blt_fp8_transpose(const blt_tensor *src, blt_tensor *dst);
 // dequantize + SGEMM fallback is both cheaper and more accurate.
 int blt_fp8_matmul_eligible(size_t m, size_t k, size_t n);
 
+// Encoding of the dynamic operand (activation or incoming gradient) that pairs
+// with a weight quantized as `weight_fmt`. cuBLASLt ships no E5M2xE5M2 kernel
+// below Blackwell, so E5M2 weights force an E4M3 dynamic operand; E4M3 weights
+// keep E4M3 on both sides.
+static inline blt_dtype blt_fp8_pair_fmt(blt_dtype weight_fmt) {
+    return weight_fmt == BLT_DTYPE_FP8_E5M2 ? BLT_DTYPE_FP8_E4M3 : weight_fmt;
+}
+
 #ifdef __cplusplus
 }
 #endif
