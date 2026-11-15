@@ -100,75 +100,6 @@ typedef struct {
     size_t windows;
 } blt_monitor_result;
 
-// One aligned-novel block: prefix bytes [0, P) re-segmented on its own, one
-// fully masked block at positions P..P+B-1, cross-attention to the last closed
-// latent. Mirrors inference, so there is no clean row to copy from.
-static void monitor_novel_block(const blt_model *model, blt_arena *scratch, blt_arena *seg_arena, blt_entropy_lm *lm,
-                                const uint8_t *text, size_t P, size_t B, int use_entropy, blt_d0_mode d0m, size_t *hits,
-                                size_t *total) {
-    if (P < 8) return;
-    blt_patch_info pp[BLT_MAX_PATCHES];
-    blt_arena_reset(seg_arena);
-    size_t Mp = use_entropy ? entropy_segment(seg_arena, lm, text, P, pp, BLT_MAX_PATCHES) : fixed_stride(P, 4, pp);
-    if (Mp < 2 || Mp >= BLT_MAX_PATCHES) return;
-    // The caller only ever passes a P that lands on a patch start, so the
-    // final prefix patch is closed and the last closed latent is Mp-1. (masked_acc
-    // handles the mid-patch case too, where it falls back to Mp-2.)
-    const size_t group = (Mp >= 1) ? (Mp - 1) : 0;
-
-    blt_arena_reset(scratch);
-    size_t bshape[1] = {P};
-    blt_tensor bytes_in = blt_tensor_create(scratch, bshape, 1, BLT_DTYPE_UINT8);
-    // scratch is a CUDA arena during training, so bytes_in.data is device
-    // memory; upload does the H2D copy. A raw memcpy would fault.
-    blt_tensor_upload(&bytes_in, text, P);
-    blt_model_enc_out enc;
-    blt_model_encode(model, &bytes_in, pp, Mp, NULL, 0, &enc, scratch);
-
-    blt_block_batch batch;
-    memset(&batch, 0, sizeof(batch));
-    batch.num_clean = P;
-    batch.block_size = B;
-    batch.num_blocks = 1;
-    batch.n_block_rows = B;
-    batch.t = 1.0f;
-    batch.loss_scale = 0.0f;
-    batch.last_row_scale = 1.0f;
-    batch.trailing_closed = 1;
-    batch.tokens = (uint32_t *)blt_container_alloc(scratch, B * sizeof(uint32_t));
-    batch.positions = (size_t *)blt_container_alloc(scratch, B * sizeof(size_t));
-    batch.targets = (uint8_t *)blt_container_alloc(scratch, B);
-    batch.cell_valid = (uint8_t *)blt_container_alloc(scratch, B);
-    batch.cell_masked = (uint8_t *)blt_container_alloc(scratch, B);
-    batch.groups = (size_t *)blt_container_alloc(scratch, B * sizeof(size_t));
-    for (size_t r = 0; r < B; r++) {
-        batch.positions[r] = P + r;
-        batch.targets[r] = text[P + r];
-        batch.tokens[r] = BLT_MASK_TOKEN_ID;
-        batch.cell_valid[r] = 1;
-        batch.cell_masked[r] = 1;
-        batch.groups[r] = group;
-    }
-
-    size_t S = P + B;
-    size_t lg[2] = {S, 256};
-    blt_tensor logits = blt_tensor_create(scratch, lg, 2, BLT_DTYPE_FP32);
-    blt_local_decoder_forward_diffusion_infer(model->decoder, &enc.byte_hidden_out, &enc.global_out, pp, Mp, &batch,
-                                              d0m, &logits, scratch);
-    float *L = (float *)malloc(logits.numel * sizeof(float));
-    if (!L) return;
-    blt_tensor_download(&logits, L, logits.numel * sizeof(float));
-    for (size_t r = 0; r < B; r++) {
-        const float *row = L + (P + r) * 256;
-        size_t best = 0;
-        for (size_t v = 1; v < 256; v++)
-            if (row[v] > row[best]) best = v;
-        (*total)++;
-        if (best == (size_t)batch.targets[r]) (*hits)++;
-    }
-    free(L);
-}
-
 static void blt_monitor(const blt_model *model, blt_arena *scratch, blt_arena *seg_arena, blt_entropy_lm *lm,
                         const uint8_t *bytes, size_t data_len, const args_t *a, size_t step, blt_monitor_result *out) {
     memset(out, 0, sizeof(*out));
@@ -257,14 +188,14 @@ static void blt_monitor(const blt_model *model, blt_arena *scratch, blt_arena *s
         free(L);
 
         // Aligned novel: prefix ends at an interior patch start, so every prefix
-        // patch is closed and the block has no clean twin. Take the first start
-        // that clears the minimum prefix and still leaves room for the block.
-        for (size_t j = 1; j + 1 < M; j++) {
-            const size_t P = patches[j].start_idx;
-            if (P < 8 || P + B > N) continue;
-            monitor_novel_block(model, scratch, seg_arena, lm, text, P, B, use_entropy,
-                                a->d0_learned ? BLT_D0_LEARNED : BLT_D0_ZEROS, &out->novel_hits, &out->novel_total);
-            break;
+        // patch is closed and the block has no clean twin. The helper scores the
+        // first start that clears the minimum prefix and still leaves room for
+        // the block.
+        blt_novel_metrics nm;
+        if (window_novel_masked(scratch, seg_arena, model, lm, text, N, patches, M, B, use_entropy,
+                                a->d0_learned ? BLT_D0_LEARNED : BLT_D0_ZEROS, &nm)) {
+            out->novel_hits += nm.hits;
+            out->novel_total += nm.cells;
         }
         out->windows++;
     }

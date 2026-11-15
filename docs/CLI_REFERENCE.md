@@ -13,6 +13,7 @@ All commands assume the repo root as working directory. Build output goes to `bu
 | `cmake --build build --target main` | Build minimal main (linking stub) |
 | `cmake --build build-cuda --target main` | Same, CUDA |
 | `cmake --build build-cuda --target train_blt_d` | Build `train_blt_d` |
+| `cmake --build build --target eval_bpb` | Build `eval_bpb` corpus BPB evaluator |
 | `cmake --build build --target sandbox_run` | Build + run scratch playground |
 | `cmake --build build-cuda --target cuda-smoke` | Device sanity check (H2D → kernel → D2H) |
 | `cmake --build build-cuda --target cuda-sanitize` | Run tests under `compute-sanitizer` (native Linux) |
@@ -926,6 +927,7 @@ The following tools are built by CMake (`cmake --build build --target <name>`):
 | `eval_isolate_redirect` | Eval isolate redirect |
 | `bench-harness` | Benchmark harness self-test |
 | `e2e-dv` | End-to-end DV driver |
+| `eval_bpb` | Corpus BPB evaluator (causal + masked metrics, JSON record) |
 
 ---
 
@@ -982,11 +984,49 @@ CLI: `python -m fblt.dataset --list|--download NAME|--verify NAME`.
 
 ### Evaluation (fblt.eval)
 
-| Command | Description |
-|---|---|
-| `python -m fblt.eval --task bpb --checkpoint PATH --corpus FILE --out eval.json` | Run evaluation, write JSON record |
-| `... --few-shot N` | Few-shot mode (0 = zero-shot) |
-| `... --csv out.csv` | Also write CSV |
+Python wrapper around `eval_bpb` (item 4 phase 1: corpus BPB). It validates the input
+paths, runs the binary, and adds `checkpoint_sha256`, `corpus_sha256`, optional
+`entropy_lm_sha256` and `git_commit` to the record. Full schema and comparability rules:
+`docs/EVALUATION.md`.
+
+```
+fblt-eval --checkpoint FILE --corpus FILE [--task bpb] [--backend cpu|cuda] [--out FILE]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--task {bpb}` | `bpb` | Only `bpb` is implemented (the CORE task harness is phase 2) |
+| `--checkpoint FILE` | *required* | Model checkpoint (`.fblt`) |
+| `--corpus FILE` | *required* | Raw byte corpus |
+| `--backend {cpu,cuda}` | `cpu` | Compute backend |
+| `--out FILE` | `eval.json` | JSON record destination |
+| `--csv FILE` | none | Also write a flattened CSV |
+| `--window W` | metadata, then 512 | Bytes per window |
+| `--windows N` | 20 | Windows requested |
+| `--skip S` | 0 | Windows skipped before the first one |
+| `--patcher {fixed,entropy}` | `fixed` | Segmentation strategy |
+| `--patch-len L` | 4 | Fixed-stride patch length |
+| `--entropy-lm FILE` | none | Entropy LM weights; required by `--patcher entropy` |
+| `--entropy-threshold F` | 3.0 | Entropy threshold for entropy patching |
+| `--block-size B` | metadata, then 4 | Diffusion block size |
+| `--layout {paper,novel}` | `paper` | Masked-cell layout |
+| `--t F` | 1.0 | Diffusion timestep for batch masking |
+| `--seed N` | 7 | Base RNG seed |
+| `--embed/--hidden/--enc-layers/--glob-layers/--dec-layers` | checkpoint metadata | Model shape (needed for v1 checkpoints) |
+| `--cross-attn {all,last}` | metadata, then `all` | Cross-attention placement |
+| `--d0 {learned,zeros}` | metadata, then `learned` | Block-row D_0 policy |
+| `--diffusion {0,1}` | metadata, then 1 | Score masked block cells |
+
+```bash
+cmake --build build --target eval_bpb
+fblt-eval --checkpoint runs/toy/model.fblt --corpus data/heldout.bin \
+  --window 128 --windows 8 --block-size 8 --patcher fixed --layout paper \
+  --out runs/toy/bpb.json --csv runs/toy/bpb.csv
+```
+
+The command prints a one-row markdown table plus the JSON record, and writes the record
+to `--out`. A missing checkpoint/corpus, a failed binary run, or an unsupported task
+exits non-zero without writing `--out`.
 
 ### Hugging Face (fblt.hf_export)
 

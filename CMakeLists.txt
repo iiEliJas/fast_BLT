@@ -173,6 +173,9 @@ target_link_libraries(e2e_blt_dv PRIVATE blt_core m)
 add_executable(sanity_check csrc/tools/sanity_check.c)
 target_link_libraries(sanity_check PRIVATE blt_core m)
 
+add_executable(eval_bpb csrc/tools/eval_bpb.c)
+target_link_libraries(eval_bpb PRIVATE blt_core m)
+
 add_executable(last_row_acc csrc/tools/last_row_acc.c)
 target_link_libraries(last_row_acc PRIVATE blt_core m)
 

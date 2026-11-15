@@ -31,6 +31,7 @@ include = ["fblt*"]
 [project.scripts]
 fblt-train = "fblt.train:main"
 fblt-infer = "fblt.infer:main"
+fblt-eval = "fblt.eval:main"
 
 [tool.ruff]
 line-length = 100
@@ -42,3 +43,4 @@ ignore = []
 
 [tool.pytest.ini_options]
 testpaths = ["tests/py"]
+pythonpath = ["."]
