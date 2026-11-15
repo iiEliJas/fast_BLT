@@ -84,10 +84,28 @@ jobs:
             --window 128 --block-size 8 --windows 128 --patcher fixed \
             --layout novel --t 1.0 --guard
 
-      - name: Gradient accumulation CLI tests
+      - name: Corpus BPB eval smoke test
+        run: |
+          cmake --build build --target eval_bpb
+          PYTHONPATH=. python -m fblt.eval --backend cpu \
+            --checkpoint runs/ci_guard/model.fblt --corpus data/heldout.bin \
+            --window 128 --windows 4 --block-size 8 --patcher fixed --layout paper \
+            --out runs/ci_guard/bpb.json
+          python - <<'PY'
+          import json, math
+          r = json.load(open("runs/ci_guard/bpb.json"))
+          assert r["format"] == "fblt-eval/bpb-v1", r["format"]
+          assert r["protocol"]["windows_evaluated"] == 4
+          assert math.isfinite(r["metrics"]["causal_bpb"]) and r["metrics"]["causal_bpb"] > 0
+          assert r["checkpoint_sha256"] and r["corpus_sha256"]
+          assert r["git_commit"] and r["git_commit"] != "unknown"
+          print("bpb record ok:", r["metrics"])
+          PY
+
+      - name: Python CLI and eval tests
         run: |
           pip install pytest
-          pytest tests/py/test_grad_accum_cli.py -q
+          pytest tests/py/test_grad_accum_cli.py tests/py/test_eval.py -q
 
       - name: Clean build artifacts
         if: always()
