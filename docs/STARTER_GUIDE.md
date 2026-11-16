@@ -177,6 +177,11 @@ fblt-train --config configs/train/production.yaml --backend cuda \
 
 Or edit `corpus:` in the YAML. For held-out evaluation, set `--eval-corpus` to a separate `.bin` file that does not overlap with training data.
 
+If the corpus ships with a manifest of its documents, pass
+`--doc-boundaries mask --corpus-manifest FILE` so windows never straddle a document boundary
+(see [DATA.md](DATA.md)). Without a manifest, leave `--doc-boundaries` at its default `off` and
+windows are sliced from the flat stream.
+
 ### Entropy patching
 
 Training can segment with the entropy LM and patcher:
@@ -224,7 +229,24 @@ Cache layout: `$FBLT_CACHE` (default `~/.cache/fblt`)/datasets/<name>/ with mani
 
 ### Data pipeline
 
-Document-aware windowing: `fblt/data_pipeline.py` provides `windows_for_docs`, `pack_documents`, `stream_corpus` (mmap), and resumable sampler state helpers. Boundary modes: mask|sentinel|off. Sharding via `--corpus-shards/--shard-index/--shard-count` (planned). Sampler state persisted as JSON sidecar.
+Corpora are flat `.bin` files of raw bytes with a `\n` between source documents. If the corpus
+ships with a manifest recording where each document starts, train with document-aligned
+windows:
+
+```bash
+fblt-train --config configs/train/production.yaml --backend cuda \
+  --corpus data/tinystories/train.bin --doc-boundaries mask \
+  --corpus-manifest data/tinystories/manifest.json --manifest-split train
+```
+
+Two manifest layouts are accepted: `index.<split>` with `{offset, length}` entries
+(`data/tinystories/manifest.json`, `data/the-stack-smol/manifest.json`) and `<split>_files`
+with `{size}` entries joined by single newlines in the corpus
+(`data/sample_corpus_manifest.json`). Every window (and its next-byte target) stays inside one
+document; documents no longer than the window are dropped and each document's unfilled tail is
+discarded, which the startup line reports as `coverage`/`tail`. Without `--doc-boundaries mask`
+the trainer slices a flat stream and may cross document boundaries. Format, validation rules
+and current limits are in [DATA.md](DATA.md).
 
 ### Reproducible speedruns (item 15)
 

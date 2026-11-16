@@ -105,7 +105,7 @@ jobs:
       - name: Python CLI and eval tests
         run: |
           pip install pytest
-          pytest tests/py/test_grad_accum_cli.py tests/py/test_eval.py -q
+          pytest tests/py/test_grad_accum_cli.py tests/py/test_doc_boundaries_cli.py tests/py/test_eval.py -q
 
       - name: Clean build artifacts
         if: always()

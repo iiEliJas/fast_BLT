@@ -44,6 +44,22 @@ fblt-infer --checkpoint runs/debug-*/checkpoint.fblt --backend cpu --prompt "int
 
 The sample corpus is built from the repository's own C/H source files (~1.1 MB) under the Apache 2.0 license. The debug config trains a tiny model in seconds. For the complete workflow, CUDA setup, custom datasets, resumption, and troubleshooting, see the [Starter Guide](docs/STARTER_GUIDE.md).
 
+### Using your own dataset
+
+Training data is a flat `.bin` file of raw bytes: no header, one `\n` between source documents.
+By default (`--doc-boundaries off`) windows are sliced from that stream and can split a document
+in half. If the corpus ships with a manifest recording where each document starts, `mask` keeps
+every window and its next-byte target inside a single document:
+
+```bash
+fblt-train --config configs/train/debug.yaml --backend cpu \
+  --corpus my_corpus.bin --doc-boundaries mask --corpus-manifest my_manifest.json
+```
+
+`python fblt/scripts/build_sample_corpus.py` writes both files for this repository as a working
+example. Corpus format, manifest layouts, validation rules and current limits are in
+[docs/DATA.md](docs/DATA.md).
+
 ## How it works
 
 Five-stage pipeline:
