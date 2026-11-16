@@ -50,6 +50,7 @@
 #include "train_args.h"
 #include "train_optim.h"
 #include "train_diag.h"
+#include "train_data.h"
 #include "train_eval.h"
 #include "train_schedule.h"
 #include "core/flops.h"
@@ -636,9 +637,57 @@ int main(int argc, char **argv) {
 
     // Training loop: non-overlapping windows over the corpus, fixed-stride
     // patches, freshly sampled corruption per visit.
-
-    size_t num_windows = (size_t)(fsize - a.window) / a.window;
-    BLT_REQUIRE(num_windows >= 1, "corpus smaller than one training window");
+    //
+    // With --doc-boundaries mask the window start offsets come from the corpus
+    // manifest, so no window (nor its next-byte target) can span two
+    // documents. That keeps the model free of an interior boundary list.
+    blt_data_windows train_windows;
+    if (strcmp(a.doc_boundaries, "off") == 0) {
+        if (a.corpus_manifest != NULL) {
+            fprintf(stderr, "train_blt_d: --corpus-manifest requires --doc-boundaries mask\n");
+            free(corpus);
+            return 1;
+        }
+        blt_data_windows_flat((size_t)fsize, a.window, &train_windows);
+        printf("[TRAIN] doc-boundaries=off windows=%zu (flat stream)\n", train_windows.count);
+    } else if (strcmp(a.doc_boundaries, "mask") == 0) {
+        if (a.corpus_manifest == NULL) {
+            fprintf(stderr, "train_blt_d: --doc-boundaries mask requires --corpus-manifest FILE\n");
+            free(corpus);
+            return 1;
+        }
+        FILE *mfp = fopen(a.corpus_manifest, "rb");
+        if (!mfp) {
+            fprintf(stderr, "cannot open manifest '%s'\n", a.corpus_manifest);
+            free(corpus);
+            return 1;
+        }
+        fseek(mfp, 0, SEEK_END);
+        const long msize = ftell(mfp);
+        fclose(mfp);
+        if (msize < 0) {
+            fprintf(stderr, "cannot size manifest '%s'\n", a.corpus_manifest);
+            free(corpus);
+            return 1;
+        }
+        blt_arena *manifest_arena = blt_arena_create((size_t)msize * 6 + (16u << 20), BLT_BACKEND_CPU);
+        const blt_json_value *manifest = blt_json_parse_file(manifest_arena, a.corpus_manifest);
+        blt_data_windows_manifest(manifest, a.manifest_split, corpus, (size_t)fsize, a.window, &train_windows);
+        blt_arena_destroy(manifest_arena);
+        const double coverage = train_windows.bytes_indexed
+                                    ? 100.0 * (double)train_windows.bytes_covered / (double)train_windows.bytes_indexed
+                                    : 0.0;
+        printf("[TRAIN] doc-boundaries=mask manifest=%s split=%s docs=%zu usable_docs=%zu dropped_docs=%zu "
+               "windows=%zu coverage=%.2f%% tail=%zuB\n",
+               a.corpus_manifest, a.manifest_split, train_windows.docs_total, train_windows.docs_used,
+               train_windows.docs_dropped, train_windows.count, coverage, train_windows.tail_bytes);
+    } else { // sentinel
+        fprintf(stderr, "train_blt_d: --doc-boundaries sentinel is not implemented; use mask or off\n");
+        free(corpus);
+        return 1;
+    }
+    size_t num_windows = train_windows.count;
+    BLT_REQUIRE(num_windows >= 1, "corpus produced no training windows");
     BLT_REQUIRE(!(a.lr_schedule == 1 && (a.lr_decay || a.lr_decay_count > 0)),
                 "train_blt_d: --lr-schedule cosine cannot be combined with --lr-decay");
     BLT_REQUIRE(a.save_best_path == NULL || a.eval_path != NULL, "train_blt_d: --save-best requires --eval-corpus");
@@ -726,7 +775,8 @@ int main(int argc, char **argv) {
 #endif
 
             const size_t w = train_window_index(data_step, num_windows, a.seed);
-            const uint8_t *text = corpus + w * a.window;
+            const size_t window_offset = blt_data_window_offset(&train_windows, w);
+            const uint8_t *text = corpus + window_offset;
             const size_t N = a.window;
 
             blt_patch_info patches[BLT_MAX_PATCHES];
@@ -775,7 +825,7 @@ int main(int argc, char **argv) {
                 }
                 if (batch.loss_scale > cap) batch.loss_scale = cap;
                 // Log batch properties for spike investigation
-                if (batch_fp) log_batch_properties(batch_fp, step, w * a.window, text, N, patches, M, &batch);
+                if (batch_fp) log_batch_properties(batch_fp, step, window_offset, text, N, patches, M, &batch);
             }
 
             size_t bshape[1] = {N};
@@ -1316,5 +1366,6 @@ int main(int argc, char **argv) {
     if (batch_fp) fclose(batch_fp);
     if (loss_fp) fclose(loss_fp);
     free(corpus);
+    blt_data_windows_free(&train_windows);
     return 0;
 }

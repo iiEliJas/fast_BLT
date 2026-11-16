@@ -39,6 +39,7 @@ int main(void) {
         {"deterministic regression", run_deterministic_regression_test},
         {"topk from logits", run_topk_from_logits_tests},
         {"train window order", run_train_window_order_tests},
+        {"doc-aware windows", run_doc_window_tests},
         {"train diagnostics", run_train_diag_tests},
         {"lr schedule", run_lr_schedule_tests},
         {"decode select sampling", run_decode_select_tests},

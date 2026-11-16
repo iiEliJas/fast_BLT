@@ -54,6 +54,8 @@ def _to_argv(cfg: typing.Any) -> typing.List[str]:
 @dataclasses.dataclass
 class TrainConfig:
     corpus: str = ""
+    corpus_manifest: typing.Optional[str] = None
+    manifest_split: str = "train"
 
     steps: int = 2000
     lr: float = 0.0001
