@@ -32,7 +32,7 @@ full workflow, see [docs/RESEARCH_GUIDE.md](docs/RESEARCH_GUIDE.md).
 | 1 | Gradient accumulation / batch > 1 | Training | Done (PR #66) |
 | 2 | BF16 mixed-precision training | Training | Done (`--dtype bf16`, encoder/global/decoder) |
 | 3 | Multi-GPU data parallel | Training | Design draft |
-| 4 | Evaluation harness (BPB + CORE tasks) | Evaluation | Open |
+| 4 | Evaluation harness (BPB + CORE tasks) | Evaluation | Partial (BPB tool + `fblt-eval`, PR #93; CORE tasks pending) |
 | 5 | MuonAdamW and optimizer parameter groups | Training | Open |
 | 6 | Compute-optimal scaling dial | Training | Open |
 | 7 | Document-aware data pipeline | Data | Partial (mask + manifest, PR #95; sharding/streaming remain) |
@@ -362,7 +362,8 @@ optimizer state across ranks in `MuonAdamW` (`nanochat/optim.py`).
 
 ## 4. Evaluation harness (BPB + CORE tasks)
 
-- **Status:** Open
+- **Status:** Partial — corpus BPB tool and `fblt-eval` merged as PR #93; CORE task harness
+  pending
 - **Area:** Evaluation
 - **Depends on:** nothing; task generation needs 7 and 10 for best results
 
@@ -384,6 +385,12 @@ output (`nanochat/core_eval.py`, `scripts/base_eval.py`, `tasks/common.py`).
 - `sanity_check` and the experiment tools cover internal diagnostics.
 - There is no task registry, few-shot prompt renderer, or downstream score output.
 - `bench/eval_suite.py` does not exist.
+
+Phase 1 (merged in PR #93) delivers the corpus-BPB half: `eval_bpb` and `fblt-eval`
+produce one `fblt-eval/bpb-v1` record with checkpoint/corpus SHA-256, the full evaluation
+protocol, params and git commit, on CPU or CUDA. Still open: the task registry and CORE
+tasks below, `--eval core,bpb,tasks`, `bench/eval_suite.py`, the corpus prep script, and
+the prompt/answer/byte-NLL tests.
 
 ### Implementation
 
