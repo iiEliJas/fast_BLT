@@ -10,6 +10,12 @@ static void usage(void) {
                     "required:\n"
                     "  --corpus FILE           raw byte corpus\n"
                     "\n"
+                    "corpus / document boundaries:\n"
+                    "  --doc-boundaries MODE   off|mask|sentinel (default off); mask carves windows from the\n"
+                    "                          manifest so none spans two documents, sentinel is not implemented\n"
+                    "  --corpus-manifest FILE  per-document offset manifest, required by --doc-boundaries mask\n"
+                    "  --manifest-split NAME   manifest split to read (default train)\n"
+                    "\n"
                     "training:\n"
                     "  --steps N               optimizer steps (default 2000)\n"
                     "  --lr F                  learning rate (default 0.0001)\n"
@@ -171,7 +177,9 @@ args_t parse_args(int argc, char **argv) {
                 .model_mb = 0,
                 .peak_tflops = 0.0f,
                 .peak_bandwidth = 0.0f,
-                .doc_boundaries = "off"};
+                .doc_boundaries = "off",
+                .corpus_manifest = NULL,
+                .manifest_split = "train"};
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--corpus") && i + 1 < argc) a.corpus_path = argv[++i];
@@ -288,6 +296,9 @@ args_t parse_args(int argc, char **argv) {
         else if (!strcmp(argv[i], "--peak-bandwidth") && i + 1 < argc) a.peak_bandwidth = atof(argv[++i]);
         else if (!strcmp(argv[i], "--doc-boundaries") && i + 1 < argc)
             snprintf(a.doc_boundaries, sizeof(a.doc_boundaries), "%s", argv[++i]);
+        else if (!strcmp(argv[i], "--corpus-manifest") && i + 1 < argc) a.corpus_manifest = argv[++i];
+        else if (!strcmp(argv[i], "--manifest-split") && i + 1 < argc)
+            snprintf(a.manifest_split, sizeof(a.manifest_split), "%s", argv[++i]);
         else if (!strcmp(argv[i], "--deterministic")) a.deterministic = 1;
         else if (!strcmp(argv[i], "--dtype") && i + 1 < argc) {
             ++i;
@@ -316,6 +327,12 @@ args_t parse_args(int argc, char **argv) {
         }
     }
     if (a.corpus_path == NULL) {
+        usage();
+    }
+    if (strcmp(a.doc_boundaries, "off") != 0 && strcmp(a.doc_boundaries, "mask") != 0 &&
+        strcmp(a.doc_boundaries, "sentinel") != 0) {
+        fprintf(stderr, "train_blt_d: unknown --doc-boundaries '%s' (expected off, mask or sentinel)\n",
+                a.doc_boundaries);
         usage();
     }
 

@@ -110,10 +110,34 @@ If no `--prompt` or `--prompt-file`, reads from stdin. Auto-detects model dimens
 | `--lr F` | 0.0001 | Learning rate |
 | `--block-size B` | 4 | Diffusion block size |
 | `--window W` | 48 | Clean-sequence length per example (8 to 2048) |
+| `--doc-boundaries MODE` | off | `off` \| `mask`; `mask` carves windows out of manifest documents instead of a flat stream. `sentinel` is rejected |
+| `--corpus-manifest FILE` | none | Per-document offset manifest; required by `--doc-boundaries mask`, rejected with `off` |
+| `--manifest-split NAME` | train | Manifest split to read (`index.<split>` or `<split>_files`) |
 
 A window above 512 needs roughly 400 patches instead of 98, so expect several times the activation
 memory and slower steps. `configs/train/tinystories_1k_phase1.yaml` and
 `configs/train/tinystories_1k_continue.yaml` are working examples at window 1024.
+
+### Document-aware windows
+
+By default (`--doc-boundaries off`) windows are a flat slice of the corpus: window `i` starts
+at `i * window` and may straddle two documents. `--doc-boundaries mask` builds the window table
+from `--corpus-manifest` instead. For a manifest entry of `length` bytes at `offset`,
+`n = (length - 1) // window` windows start at `offset + j * window`, so the next-byte target at
+`start + window` stays inside the same document. Entries with `length <= window` contribute no
+windows and each document's unfilled tail is dropped; the startup line reports that cost as
+`coverage`/`tail`. `sentinel` is rejected.
+
+```bash
+build/train_blt_d --corpus data/train.bin --backend cpu --window 32 \
+  --doc-boundaries mask --corpus-manifest data/sample_corpus_manifest.json --steps 1
+# [TRAIN] doc-boundaries=mask manifest=data/sample_corpus_manifest.json split=train \
+#   docs=172 usable_docs=171 dropped_docs=1 windows=44222 coverage=99.80% tail=2783B
+# (the sample corpus is rebuilt from the working tree, so these counts change)
+```
+
+Manifest layouts, validation rules and current limits (eval and the periodic monitor still slice
+flat windows) are in [DATA.md](DATA.md).
 
 ### Memory cost of long windows
 
@@ -979,8 +1003,6 @@ cmake --build build-cuda --target train_sweep
 
 Cache layout: `$FBLT_CACHE` (default `~/.cache/fblt`)/datasets/<name>/ with manifest.json and shard-*.bin.
 CLI: `python -m fblt.dataset --list|--download NAME|--verify NAME`.
-
-| `--doc-boundaries MODE` | off | Document boundary handling: off, mask, sentinel |
 
 ### Evaluation (fblt.eval)
 

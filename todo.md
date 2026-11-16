@@ -35,7 +35,7 @@ full workflow, see [docs/RESEARCH_GUIDE.md](docs/RESEARCH_GUIDE.md).
 | 4 | Evaluation harness (BPB + CORE tasks) | Evaluation | Open |
 | 5 | MuonAdamW and optimizer parameter groups | Training | Open |
 | 6 | Compute-optimal scaling dial | Training | Open |
-| 7 | Document-aware data pipeline | Data | Open |
+| 7 | Document-aware data pipeline | Data | Partial (mask + manifest, PR #95; sharding/streaming remain) |
 | 8 | Batched inference and KV cache | Inference | Partial (storage + helper, PRs #69/#70) |
 | 9 | Checkpoint ergonomics | Checkpoints | Open |
 | 10 | Byte-level SFT and chat | Post-training | Open |
@@ -669,7 +669,8 @@ and computes a compute-optimal batch size from `Bopt ∝ D^0.383`
 
 ## 7. Document-aware data pipeline
 
-- **Status:** Open
+- **Status:** Partial — document-aligned windows and manifest consumption merged as PR #95;
+  sharding, streaming, sentinel and multi-document packing remain
 - **Area:** Data
 - **Depends on:** nothing; 3 uses the sharding hooks
 
@@ -688,10 +689,19 @@ downloads, distributed row-group sharding, and resumable dataloader state
 
 - `fblt/scripts/prep_stack_smol.py` writes files separated by a single newline.
 - `fblt/scripts/prep_tinystories.py` writes a flat byte corpus.
-- `csrc/train_blt_d.c` computes `num_windows` from the file size and calls
-  `train_window_index(step, num_windows, seed)`.
-- `data/manifest.json` records per-file offsets and lengths but the trainer does not use them.
-- There is no attention-mask reset at document boundaries and no sampler checkpoint state.
+- `csrc/train_data.c` builds the window table: the flat formula for `off`, manifest-carved
+  offsets for `mask`. `csrc/train_blt_d.c` selects a window with
+  `train_window_index(step, num_windows, seed)` and reads bytes at that offset.
+- The per-document `index.<split>` and `<split>_files` manifest layouts are consumed.
+- The eval and monitor paths still slice flat windows; there is no sharding, streaming or
+  sampler checkpoint state.
+
+Phase 1 (merged in PR #95) delivers document-aligned window construction: `--doc-boundaries
+mask` with `--corpus-manifest` and `--manifest-split`, the `length - 1` target rule,
+diagnostics (`docs`/`usable_docs`/`dropped_docs`/`windows`/`coverage`/`tail`), unit and e2e
+tests, and `docs/DATA.md`. `sentinel` is rejected rather than silently ignored. Still open:
+sharding and `--data-order`, the mmap/streaming path, multi-document packing, a persisted
+sampler state, and manifest-aware eval windows.
 
 ### Implementation
 
