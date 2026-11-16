@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from fblt.data_pipeline import load_manifest, window_summary
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BUILD_DIR = Path(os.environ.get("FBLT_BUILD_DIR", REPO_ROOT / "build"))
 _CANDIDATES = [BUILD_DIR / "train_blt_d", BUILD_DIR / "train_blt_d.exe"]
@@ -212,10 +214,12 @@ def test_manifest_requires_mask(tmp_path):
     reason="sample corpus or its manifest is missing",
 )
 def test_sample_manifest_layout_end_to_end(tmp_path):
+    corpus = REPO_ROOT / "data/train.bin"
+    manifest = REPO_ROOT / "data/sample_corpus_manifest.json"
     proc = run_train(
         [
             "--corpus",
-            str(REPO_ROOT / "data/train.bin"),
+            str(corpus),
             "--backend",
             "cpu",
             "--embed",
@@ -235,12 +239,24 @@ def test_sample_manifest_layout_end_to_end(tmp_path):
             "--doc-boundaries",
             "mask",
             "--corpus-manifest",
-            str(REPO_ROOT / "data/sample_corpus_manifest.json"),
+            str(manifest),
             "--steps",
             "1",
         ]
     )
+    # build_sample_corpus.py regenerates the corpus from the working tree, so its
+    # document count changes as source files are added. Compare the trainer's
+    # diagnostics with the Python mirror of the same manifest instead of pinning
+    # a count from one checkout.
+    summary = window_summary(
+        load_manifest(manifest), "train", 64, corpus_size=corpus.stat().st_size
+    )
     line = next(row for row in proc.stdout.splitlines() if "doc-boundaries=mask" in row)
-    assert "docs=172" in line
-    windows = re.search(r"windows=(\d+)", line)
-    assert windows and int(windows.group(1)) > 0
+    assert f"docs={summary['docs_total']}" in line
+    assert f"usable_docs={summary['docs_used']}" in line
+    assert f"dropped_docs={summary['docs_dropped']}" in line
+    assert f"windows={summary['windows']}" in line
+    assert f"tail={summary['tail_bytes']}B" in line
+    coverage = re.search(r"coverage=([0-9.]+)%", line)
+    assert coverage and math.isclose(float(coverage.group(1)), summary["coverage"], abs_tol=0.01)
+    assert summary["windows"] > 0

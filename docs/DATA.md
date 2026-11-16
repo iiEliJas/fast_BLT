@@ -133,7 +133,10 @@ The trainer prints one line at startup describing the window table, before the f
 window, `dropped_docs` the rest, `windows` the total window count, and `coverage` /
 `tail` the tradeoff above.
 
-Measured examples (CPU build, one step is enough — the line is printed before training):
+Measured examples (CPU build, one step is enough — the line is printed before training).
+`build_sample_corpus.py` regenerates the sample corpus from the working tree, so its document
+and window counts grow as source files are added; the numbers below are a 2026-11-16
+snapshot. TinyStories is a fixed dataset, so those numbers are stable.
 
 ```bash
 # Sample corpus (172 source files) with the <split>_files layout.

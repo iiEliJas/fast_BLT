@@ -131,8 +131,9 @@ windows and each document's unfilled tail is dropped; the startup line reports t
 ```bash
 build/train_blt_d --corpus data/train.bin --backend cpu --window 32 \
   --doc-boundaries mask --corpus-manifest data/sample_corpus_manifest.json --steps 1
-# [TRAIN] doc-boundaries=mask manifest=data/sample_corpus_manifest.json split=train docs=172 \
-#   usable_docs=171 dropped_docs=1 windows=44222 coverage=99.80% tail=2783B
+# [TRAIN] doc-boundaries=mask manifest=data/sample_corpus_manifest.json split=train \
+#   docs=172 usable_docs=171 dropped_docs=1 windows=44222 coverage=99.80% tail=2783B
+# (the sample corpus is rebuilt from the working tree, so these counts change)
 ```
 
 Manifest layouts, validation rules and current limits (eval and the periodic monitor still slice
