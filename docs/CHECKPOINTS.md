@@ -35,7 +35,8 @@ fblt-train ... --save-dir runs/debug --eval-corpus data/heldout.bin --eval-every
   --save-every 200
 ```
 
-Without `--save-every` only the end-of-run checkpoint is written. With `--eval-corpus` and
+Without `--save-every` only the end-of-run checkpoint is written. `--steps 0` writes nothing:
+it is the eval-only path and leaves the pointers where they are. With `--eval-corpus` and
 `--eval-every > 0`, a run that improves on the tracked metric (`--best-metric bpb` by
 default, or `masked_acc`) also writes `best_<step>.fblt` and updates `best.txt`. A run with
 `--eval-corpus` but `--eval-every 0` evaluates once at the end and writes no best file,
@@ -107,10 +108,15 @@ Version 2 containers carry a JSON block. `train_blt_d` writes:
 }
 ```
 
-Best saves add what made the file win:
+Best saves add what made the file win, inside `training`:
 
 ```json
-"best_metric": {"name": "causal_bpb", "value": 8.001449, "step": 1}
+"training": {
+  "step": 1,
+  "optimizer": "adamw",
+  "seed": 7,
+  "best_metric": {"name": "causal_bpb", "value": 8.001449, "step": 1}
+}
 ```
 
 Version 1 containers (written by older builds) have no metadata block. Loaders accept them;
