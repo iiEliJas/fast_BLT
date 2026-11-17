@@ -999,10 +999,18 @@ cmake --build build-cuda --target train_sweep
 |---|---|
 | `python -m fblt.speedrun --config PATH --out DIR` | Run a reproducible speedrun, writing `DIR/result.json` |
 
-### Datasets
+### Datasets (fblt.dataset)
 
-Cache layout: `$FBLT_CACHE` (default `~/.cache/fblt`)/datasets/<name>/ with manifest.json and shard-*.bin.
-CLI: `python -m fblt.dataset --list|--download NAME|--verify NAME`.
+| Command | Description |
+|---|---|
+| `python -m fblt.dataset --list` | Print each registered dataset with its size, license and URL |
+| `python -m fblt.dataset --download NAME` | Download into the cache and write the manifest; no-op if already present |
+| `python -m fblt.dataset --verify NAME` | Re-hash the cached shard against the manifest; exit 1 on mismatch |
+
+Cache layout: `$FBLT_CACHE` (default `~/.cache/fblt`)/datasets/<name>/ holding `.lock`,
+`shard-00000.bin` and `manifest.json`. Registered names: `tinyshakespeare`, `tinystories`.
+A registry entry without a URL or a valid SHA-256 is rejected before anything is written.
+Registry, checksum provenance, manifest schema and limits: `docs/DATASETS.md`.
 
 ### Evaluation (fblt.eval)
 

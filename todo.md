@@ -42,7 +42,7 @@ full workflow, see [docs/RESEARCH_GUIDE.md](docs/RESEARCH_GUIDE.md).
 | 11 | Sandboxed tool execution | Post-training | Open |
 | 12 | RL / GRPO | Post-training | Open |
 | 13 | FP8 / FP16 training | Training | Done (primitives + integration, --fp8 flag) |
-| 14 | Dataset download and cache | Data | Open |
+| 14 | Dataset download and cache | Data | Partial (verified registry + download/verify CLI; sharding/range-resume pending) |
 | 15 | Reproducible speedrun and leaderboard | Tooling | Open |
 | 16 | Peak FLOPS/BW table and MBU | Tooling | Open (E009 profiling landed) |
 | 17 | Interactive chat CLI | Inference | Open |
@@ -1275,7 +1275,7 @@ filter (`nanochat/fp8.py`), and selects compute dtype from the device capability
 
 ## 14. Dataset download and cache
 
-- **Status:** Open
+- **Status:** Partial (verified registry + download/verify CLI; sharding and range-resume pending)
 - **Area:** Data
 - **Depends on:** 7 (manifest and boundary policy)
 
@@ -1289,10 +1289,14 @@ manifest, and exposes a cache directory (`nanochat/dataset.py`, `nanochat/common
 
 ### Current state
 
-- `fblt/scripts/prep_stack_smol.py` and `prep_tinystories.py` prepare specific corpora.
+- `fblt/dataset.py`: registry with two verified entries (`tinyshakespeare`, `tinystories`),
+  `$FBLT_CACHE` layout, retries with backoff, POSIX lock, checksum verification, manifest
+  written last. `--download` refuses a spec without a URL or checksum.
+- `fblt/scripts/prep_stack_smol.py` and `prep_tinystories.py` still convert cached or
+  downloaded bytes into training corpora.
 - `data/manifest.json` exists for the sample corpus.
-- There is no registry, cache directory, retry logic, or file lock.
-- Large corpora are not downloaded automatically.
+- Remaining: HTTP range/resume, real multi-shard downloads, a Windows lock fallback,
+  free-space check. See `docs/DATASETS.md`.
 
 ### Implementation
 

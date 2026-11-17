@@ -60,6 +60,9 @@ fblt-train --config configs/train/debug.yaml --backend cpu \
 example. Corpus format, manifest layouts, validation rules and current limits are in
 [docs/DATA.md](docs/DATA.md).
 
+Two datasets are registered for download with a pinned checksum
+(`python -m fblt.dataset --download tinyshakespeare`); see [docs/DATASETS.md](docs/DATASETS.md).
+
 ## How it works
 
 Five-stage pipeline:
@@ -113,6 +116,7 @@ CUDA builds default to architecture `89`; use `-DCMAKE_CUDA_ARCHITECTURES=...` f
 
 - [Starter Guide](docs/STARTER_GUIDE.md) - installation, first run, training, inference, checkpoints, evaluation, and troubleshooting.
 - [CLI Reference](docs/CLI_REFERENCE.md) - every training, inference, benchmark, and diagnostic flag.
+- [Datasets](docs/DATASETS.md) - download/cache CLI, registered datasets, checksums, and limits.
 - [Benchmarks](docs/BENCHMARKS.md) - inference and CUDA performance results.
 - [Ablations](docs/ABLATIONS.md) - architecture and schedule ablation results.
 - [Research Guide](docs/RESEARCH_GUIDE.md) - how to formulate, run, and report experiments.

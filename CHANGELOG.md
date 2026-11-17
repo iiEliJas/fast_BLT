@@ -49,9 +49,14 @@ be a minor version.
   layout, and latest/best/resume lookup, plus a `model_info` CLI that prints checkpoint
   metadata. The C trainer does not accept `--save-dir`/`--resume` yet, so these are building
   blocks rather than a wired feature. (#80)
-- **Dataset download/cache scaffolding** (`fblt/dataset.py`): registry, SHA-256 verification,
-  file locking, retries and a written manifest. The registry entry currently ships without a
-  URL, so a download writes an empty manifest instead of fetching data. (#82, #83)
+- **Dataset download and cache** (`fblt/dataset.py`): a registry of two verified entries
+  (`tinyshakespeare`, the TinyStories GPT-4-valid split, both with pinned SHA-256 and size),
+  `$FBLT_CACHE` layout, `fcntl` lock, retries with backoff, and a manifest written last that
+  records URL, version, license, source, size and the expected digest. `python -m
+  fblt.dataset --download NAME` / `--verify NAME` fetch and re-hash the shard; a spec with no
+  URL or no valid checksum is rejected before anything is written. Single-file datasets only:
+  no HTTP range/resume, no multi-shard download, no Windows lock fallback. See
+  `docs/DATASETS.md`. (#82, #83, #97)
 - **Speedrun and leaderboard CLI scaffolding** (`fblt/speedrun.py`): result aggregation over
   JSON files; the runner does not invoke training yet. (#81)
 - **Hugging Face export/import CLI scaffolding** (`fblt/hf_export.py`): writes a minimal

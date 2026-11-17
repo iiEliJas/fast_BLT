@@ -225,7 +225,14 @@ For ergonomic runs, use `--save-dir DIR` (writes `DIR/checkpoints/*.fblt`) and `
 
 ### Datasets
 
-Cache layout: `$FBLT_CACHE` (default `~/.cache/fblt`)/datasets/<name>/ with manifest.json and shard-*.bin. CLI: `python -m fblt.dataset --list|--download NAME|--verify NAME`. Manifest records license, source, size, SHA-256.
+Cache layout: `$FBLT_CACHE` (default `~/.cache/fblt`)/datasets/<name>/ with manifest.json and shard-*.bin. `python -m fblt.dataset --list` shows the registered names; `tinyshakespeare` (1.1 MB) and the TinyStories valid split (22 MB) are the two entries. Download and verify:
+
+```bash
+python -m fblt.dataset --download tinyshakespeare
+python -m fblt.dataset --verify tinyshakespeare
+```
+
+The manifest records the URL, version, license, source, size and expected SHA-256, and is written only after the checksum matches. Details and limits: [docs/DATASETS.md](DATASETS.md).
 
 ### Data pipeline
 
