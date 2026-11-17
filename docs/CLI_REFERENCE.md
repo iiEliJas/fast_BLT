@@ -319,9 +319,9 @@ build/train_blt_d --corpus data/train.bin --steps 2000 --grad-accum 4 \
 
 | Flag | Description |
 |------|-------------|
-| `--save-weights PATH` | Write weights after training; if PATH contains `%d`, the first `%d` is replaced by the step number |
-| `--save-dir DIR` | Directory convention: writes `DIR/checkpoints/*.fblt` (ergonomic alternative to `--save-weights`) |
-| `--resume auto|latest|best` | Resume from a checkpoint under `--save-dir` (best = lowest `best_loss`) |
+| `--save-weights PATH` | Write weights after training; if PATH contains `%d` or `%06d`, the first conversion is replaced by the step number |
+| `--save-dir DIR` | Default `DIR/checkpoints/step_%06d.fblt` + `.fbop` (and `best_%06d.fblt` + `.fbop` with eval), plus `latest.txt`/`best.txt` pointers. Explicit `--save-weights`/`--save-optim`/`--save-best` win |
+| `--resume auto|latest|best` | Load the checkpoint named by `best.txt`/`latest.txt` under `--save-dir`, restore its AdamW state, and continue from its step. Requires `--save-dir`; cannot be combined with `--load-weights`/`--load-optim` |
 | `--save-every N` | Save checkpoint every N steps (0 = only at end) |
 | `--load-weights PATH` | Load weights before training (steps=0 → eval only) |
 | `--save-optim PATH` | Write AdamW moments and step counter alongside the weights |
@@ -358,6 +358,23 @@ build-cuda/train_blt_d --corpus data/train.bin --steps 300000 \
 `--steps` is the number of steps to run in this invocation. The absolute step counter continues from
 the value stored in the optimizer snapshot, so all logs, `--save-every` filenames, and any
 step-indexed schedule (`--lr-decay-steps`, `--mask-late-step`) continue where they left off.
+
+`--steps 0` is the eval-only path: it loads, evaluates and exits without writing a checkpoint or
+moving the `latest.txt`/`best.txt` pointers.
+
+`--save-dir` / `--resume` wrap the same behaviour: `--resume latest` reads
+`DIR/checkpoints/latest.txt`, adopts the sibling `.fbop` when it exists, and derives the step from
+the stored counter or the file name. `--resume auto` prefers `best.txt`. A missing pointer or a
+dangling one is fatal rather than silently starting from step 0:
+
+```bash
+build/train_blt_d --corpus data/train.bin --steps 500 --save-dir runs/x --save-every 100
+build/train_blt_d --corpus data/train.bin --steps 500 --save-dir runs/x --resume latest
+```
+
+Checkpoint files are written to `<path>.tmp`, flushed, `fsync`ed and renamed, so a killed save
+leaves the previous checkpoint intact. Layout, pointer semantics, metadata fields and limits:
+[docs/CHECKPOINTS.md](CHECKPOINTS.md).
 Fraction-based schedules (`--lr-decay`, `--t-warmup-hi`) use `start_step + steps` as the planned end,
 so they behave as if the whole thing had been one continuous run. `--start-step N` overrides the
 stored counter if you need to.

@@ -37,7 +37,7 @@ full workflow, see [docs/RESEARCH_GUIDE.md](docs/RESEARCH_GUIDE.md).
 | 6 | Compute-optimal scaling dial | Training | Open |
 | 7 | Document-aware data pipeline | Data | Partial (mask + manifest, PR #95; sharding/streaming remain) |
 | 8 | Batched inference and KV cache | Inference | Partial (storage + helper, PRs #69/#70) |
-| 9 | Checkpoint ergonomics | Checkpoints | Open |
+| 9 | Checkpoint ergonomics | Checkpoints | Partial (`--save-dir`/`--resume`, atomic writes, pointers; metadata/migration pending) |
 | 10 | Byte-level SFT and chat | Post-training | Open |
 | 11 | Sandboxed tool execution | Post-training | Open |
 | 12 | RL / GRPO | Post-training | Open |
@@ -857,7 +857,7 @@ the batch together (`nanochat/engine.py`).
 
 ## 9. Checkpoint ergonomics
 
-- **Status:** Open
+- **Status:** Partial (PR #98: `--save-dir`/`--resume`, atomic writes, latest/best pointers, `model_info` counts; richer metadata and config migration pending)
 - **Area:** Checkpoints
 - **Depends on:** nothing
 

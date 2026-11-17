@@ -45,10 +45,14 @@ be a minor version.
 - **`fblt.data_pipeline` offline helpers** (`load_manifest`, `doc_spans`, `window_offsets`,
   `window_summary`) that mirror the C window rule, so a corpus and manifest can be inspected
   without starting a run. (#95)
-- **Python-side checkpoint helpers** (`fblt/_checkpoint.py`): atomic writes, save-directory
-  layout, and latest/best/resume lookup, plus a `model_info` CLI that prints checkpoint
-  metadata. The C trainer does not accept `--save-dir`/`--resume` yet, so these are building
-  blocks rather than a wired feature. (#80)
+- **Checkpoint save directories and resumption.** `--save-dir DIR` writes
+  `DIR/checkpoints/step_%06d.fblt` with matching `.fbop` AdamW state (and `best_%06d.*` when
+  periodic eval is enabled), plus `latest.txt`/`best.txt` pointers. `--resume auto|latest|best`
+  follows the pointers, restores the optimizer moments and step counter, and continues; a
+  missing or dangling pointer is fatal instead of a silent restart at step 0. Explicit
+  `--save-weights`/`--save-optim`/`--save-best` still win over the `--save-dir` defaults.
+  `--steps 0` no longer writes a checkpoint. Best saves now record the metric that won in
+  `training.best_metric` instead of writing empty metadata. (#80, #98)
 - **Dataset download and cache** (`fblt/dataset.py`): a registry of two verified entries
   (`tinyshakespeare`, the TinyStories GPT-4-valid split, both with pinned SHA-256 and size),
   `$FBLT_CACHE` layout, `fcntl` lock, retries with backoff, and a manifest written last that
@@ -84,6 +88,16 @@ be a minor version.
 
 ### Fixed
 
+- Checkpoint writes opened the destination with `fopen(..., "wb")`, so a process killed
+  mid-save truncated the previous checkpoint. Weights, AdamW state and entropy-LM files are
+  now written to `<path>.tmp`, flushed, `fsync`ed (`_commit` on Windows) and renamed into
+  place. (#98)
+- `latest_checkpoint` returned `sorted(glob("*.fblt"))[-1]` without opening the file, so a
+  4-byte truncated save was handed back as the resume target, and `best_checkpoint` looked for
+  a `best_loss` key the trainer never wrote. Both now validate the container (header and
+  tensor walk, payload truncation included), honour the `latest.txt`/`best.txt` pointers, and
+  skip invalid files. `model_info` reports tensor and parameter counts, step and best metric.
+  (#80, #98)
 - Gradient clipping read uninitialized device memory when a model had more than 64 parameter
   tensors; the norm buffer is now sized up front and the clip factor is folded into the optimizer
   update. The old CUDA path dropped 64 of the 67 contributions, so the norm and clip factor
