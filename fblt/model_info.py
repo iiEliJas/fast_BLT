@@ -1,4 +1,4 @@
-"""CLI: print checkpoint metadata."""
+"""CLI: print checkpoint path, size, metadata, tensor/parameter counts and step."""
 
 import argparse
 import json
