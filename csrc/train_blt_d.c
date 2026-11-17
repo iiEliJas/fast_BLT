@@ -134,8 +134,9 @@ static int blt_step_from_path(const char *path, size_t *step_out) {
 }
 
 // Checkpoint metadata shared by the periodic, end-of-run and best saves.
-// best_metric_name is NULL for plain saves; the best saves append the metric
-// that made the file win so the provenance survives into the JSON.
+// best_metric_name is NULL for plain saves; the best saves record the metric
+// that made the file win under training.best_metric, where the Python readers
+// (fblt/_checkpoint.py, fblt/model_info.py) look for it.
 static void blt_build_meta(char *buf, size_t cap, const args_t *a, size_t step, const char *best_metric_name,
                            double best_value) {
     const int n =
@@ -148,8 +149,9 @@ static void blt_build_meta(char *buf, size_t cap, const args_t *a, size_t step, 
                  a->d0_learned ? "learned" : "zeros", a->diffusion, a->block_size, a->window, step,
                  a->optimizer ? "adamw" : "sgd", (unsigned long long)a->seed);
     if (best_metric_name == NULL || n <= 0 || (size_t)n + 96 > cap) return;
-    // Splice the metric object in over the closing brace of the base object.
-    snprintf(buf + n - 1, cap - (size_t)n + 1, ",\"best_metric\":{\"name\":\"%s\",\"value\":%.6f,\"step\":%zu}}",
+    // Replace the close of "training" (second-to-last brace) with the metric
+    // object, leaving the root object close in place.
+    snprintf(buf + n - 2, cap - (size_t)n + 2, ",\"best_metric\":{\"name\":\"%s\",\"value\":%.6f,\"step\":%zu}}}",
              best_metric_name, best_value, step);
 }
 

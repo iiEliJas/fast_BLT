@@ -44,12 +44,13 @@ typedef struct {
     const char *load_path;
     const char *save_optim_path;
     const char *load_optim_path;
-    // --save-dir seeds save_path / save_optim_path / save_best_path when the
-    // explicit flags are absent. The generated templates live in this struct so
-    // no pointer ever refers to argv or to a buffer that dies with parse_args.
+    // --save-dir seeds save_path / save_optim_path / save_best_path /
+    // save_best_optim_path when the explicit flags are absent. The generated
+    // templates live in this struct so no pointer ever refers to argv or to a
+    // buffer that dies with parse_args.
     const char *save_dir;
     int resume_mode;
-    char save_dir_paths[3][BLT_TRAIN_PATH_MAX];
+    char save_dir_paths[4][BLT_TRAIN_PATH_MAX];
     size_t start_step;
     int start_step_given;
     size_t eval_skip;

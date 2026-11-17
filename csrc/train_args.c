@@ -85,7 +85,8 @@ static void usage(void) {
                     "I/O:\n"
                     "  --save-weights PATH     write weights after training (first %%d is replaced by step)\n"
                     "  --save-every N          save checkpoint every N steps (0 = only at end)\n"
-                    "  --save-dir DIR   write DIR/checkpoints/step_%%06d.fblt (+ .fbop) and latest/best pointers\n"
+                    "  --save-dir DIR   write DIR/checkpoints/step_%%06d.fblt, best_%%06d.fblt (+ .fbop) and "
+                    "latest/best pointers\n"
                     "  --resume auto|latest|best   load the newest/best checkpoint under --save-dir and continue its "
                     "step counter\n"
                     "  --load-weights PATH     load weights before training\n"
@@ -112,8 +113,8 @@ static void save_dir_path(char *buf, const char *dir, const char *leaf) {
 }
 
 // --save-dir supplies defaults only: an explicit --save-weights/--save-optim/
-// --save-best always wins, and the generated templates are stored in the args
-// struct so the pointers outlive argv.
+// --save-best/--save-best-optim always wins, and the generated templates are
+// stored in the args struct so the pointers outlive argv.
 static void apply_save_dir(args_t *a) {
     if (a->resume_mode != BLT_RESUME_OFF) {
         if (a->save_dir == NULL) BLT_FATAL("train_blt_d: --resume requires --save-dir");
@@ -130,11 +131,19 @@ static void apply_save_dir(args_t *a) {
         save_dir_path(a->save_dir_paths[1], a->save_dir, "step_%06d.fbop");
         a->save_optim_path = a->save_dir_paths[1];
     }
-    // Deliberately the same template as save_path: a best checkpoint is the
-    // same weights at the same step, so it rewrites that step's file.
-    if (a->save_best_path == NULL && a->eval_path != NULL) {
-        save_dir_path(a->save_dir_paths[2], a->save_dir, "step_%06d.fblt");
+    // Best checkpoints get their own names: a periodic or end-of-run save of the
+    // same step must not overwrite the file best.txt points at, or the winning
+    // checkpoint would lose the best_metric record that says why it won.
+    // --save-best is only meaningful with periodic eval, which the trainer
+    // itself enforces, so mirror that gate here instead of defaulting a path
+    // that would then trip the --eval-every check.
+    if (a->save_best_path == NULL && a->eval_path != NULL && a->eval_every > 0) {
+        save_dir_path(a->save_dir_paths[2], a->save_dir, "best_%06d.fblt");
         a->save_best_path = a->save_dir_paths[2];
+    }
+    if (a->save_best_optim_path == NULL && a->save_best_path != NULL) {
+        save_dir_path(a->save_dir_paths[3], a->save_dir, "best_%06d.fbop");
+        a->save_best_optim_path = a->save_dir_paths[3];
     }
 }
 
