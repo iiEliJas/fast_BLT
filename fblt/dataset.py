@@ -2,37 +2,56 @@
 
 import argparse
 import dataclasses
+import hashlib
+import json
+import os
+import shutil
+import sys
+import time
+import urllib.request
 
 try:
     import fcntl
 except ImportError:
     fcntl = None
-import hashlib
-import json
-import os
-import shutil
-import time
-import urllib.request
+
+RETRIES = 3
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(frozen=True)
 class DatasetSpec:
     name: str
     url: str
     sha256: str
-    shards: int = 1
+    size: int = 0
     license: str = "unknown"
     source: str = ""
+    version: str = ""
 
 
+# Each entry must carry a working URL and the SHA-256 of the bytes that URL returns;
+# download_dataset refuses to write a manifest otherwise. Checksums are reproducible:
+# see docs/DATASETS.md for how they were recorded and how to refresh one.
 REGISTRY = {
+    "tinyshakespeare": DatasetSpec(
+        name="tinyshakespeare",
+        url="https://raw.githubusercontent.com/karpathy/char-rnn/"
+        "master/data/tinyshakespeare/input.txt",
+        sha256="86c4e6aa9db7c042ec79f339dcb96d42b0075e16b8fc2e86bf0ca57e2dc565ed",
+        size=1115394,
+        license="public-domain",
+        source="karpathy/char-rnn (Shakespeare)",
+        version="char-rnn@master:input.txt",
+    ),
     "tinystories": DatasetSpec(
         name="tinystories",
-        url="",
-        sha256="",
-        shards=1,
+        url="https://huggingface.co/datasets/roneneldan/TinyStories/resolve/main/"
+        "TinyStoriesV2-GPT4-valid.txt",
+        sha256="6874bae9a4c1a4e7edcf0e53b86c17817e9cf881fc75ff2368da457b80c0585d",
+        size=22502601,
         license="CDLA-Sharing-1.0",
-        source="TinyStories",
+        source="roneneldan/TinyStories (TinyStoriesV2-GPT4-valid)",
+        version="TinyStoriesV2-GPT4-valid.txt@main",
     ),
 }
 
@@ -55,21 +74,39 @@ def _sha256_file(path):
     return h.hexdigest()
 
 
-def download_one(url, dest, sha256=None, retries=3):
+def get_spec(name):
+    try:
+        return REGISTRY[name]
+    except KeyError:
+        known = ", ".join(sorted(REGISTRY)) or "(none)"
+        raise ValueError(f"unknown dataset '{name}' (known: {known})") from None
+
+
+def validate_spec(spec):
+    if not spec.url:
+        raise ValueError(f"dataset '{spec.name}' has no download URL in REGISTRY")
+    if len(spec.sha256) != 64 or any(c not in "0123456789abcdef" for c in spec.sha256):
+        raise ValueError(
+            f"dataset '{spec.name}' has no valid SHA-256 in REGISTRY; "
+            "refusing an unverified download"
+        )
+
+
+def download_one(url, dest, sha256=None, retries=RETRIES):
+    tmp = dest + ".tmp"
     for attempt in range(retries):
         try:
-            tmp = dest + ".tmp"
             if os.path.exists(url):
                 shutil.copyfile(url, tmp)
             else:
                 urllib.request.urlretrieve(url, tmp)
-            if sha256:
-                if _sha256_file(tmp) != sha256:
-                    os.remove(tmp)
-                    raise ValueError("checksum mismatch")
+            if sha256 and _sha256_file(tmp) != sha256:
+                raise ValueError(f"checksum mismatch for {url}")
             os.replace(tmp, dest)
             return dest
         except Exception:
+            if os.path.exists(tmp):
+                os.remove(tmp)
             if attempt == retries - 1:
                 raise
             time.sleep(0.5 * (2**attempt))
@@ -84,28 +121,30 @@ def acquire_lock(name):
 
 
 def download_dataset(name):
-    spec = REGISTRY[name]
+    spec = get_spec(name)
+    validate_spec(spec)
     d = dataset_dir(name)
     fh = acquire_lock(name)
     try:
         manifest_path = os.path.join(d, "manifest.json")
         if os.path.exists(manifest_path):
-            return manifest_path  # no-op
-        # download shard(s)
+            return manifest_path  # already published
         shard_path = os.path.join(d, "shard-00000.bin")
-        if spec.url:
-            download_one(spec.url, shard_path, spec.sha256 if spec.sha256 else None)
-        size = os.path.getsize(shard_path) if os.path.exists(shard_path) else 0
-        sha = _sha256_file(shard_path) if os.path.exists(shard_path) else ""
+        download_one(spec.url, shard_path, spec.sha256)
+        size = os.path.getsize(shard_path)
+        if spec.size and size != spec.size:
+            os.remove(shard_path)
+            raise ValueError(f"size mismatch for '{name}': expected {spec.size}, got {size}")
         manifest = {
             "name": name,
+            "url": spec.url,
+            "version": spec.version,
             "license": spec.license,
             "source": spec.source,
             "size": size,
-            "sha256": sha,
-            "shards": spec.shards,
+            "sha256": spec.sha256,
+            "shards": 1,
         }
-        # write manifest last
         tmp = manifest_path + ".tmp"
         with open(tmp, "w") as f:
             json.dump(manifest, f, indent=2)
@@ -132,25 +171,30 @@ def verify_dataset(name):
     return _sha256_file(shard) == m["sha256"]
 
 
-def main():
-    ap = argparse.ArgumentParser()
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="Download and verify registered datasets.")
     ap.add_argument("--list", action="store_true")
-    ap.add_argument("--download")
-    ap.add_argument("--verify")
-    args = ap.parse_args()
+    ap.add_argument("--download", metavar="NAME")
+    ap.add_argument("--verify", metavar="NAME")
+    args = ap.parse_args(argv)
     if args.list:
-        for k, v in REGISTRY.items():
-            print(f"{k}: license={v.license} shards={v.shards}")
-        return
+        for name, spec in sorted(REGISTRY.items()):
+            print(f"{name}: {spec.size or '?'} bytes, license={spec.license}, url={spec.url}")
+        return 0
     if args.download:
-        p = download_dataset(args.download)
-        print("manifest:", p)
-        return
+        try:
+            print("manifest:", download_dataset(args.download))
+        except (KeyError, ValueError, OSError) as exc:
+            print(f"download failed: {exc}", file=sys.stderr)
+            return 1
+        return 0
     if args.verify:
         ok = verify_dataset(args.verify)
         print("verify:", ok)
-        return
+        return 0 if ok else 1
+    ap.print_help()
+    return 2
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
