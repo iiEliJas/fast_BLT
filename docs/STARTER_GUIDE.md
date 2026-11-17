@@ -232,7 +232,7 @@ python -m fblt.dataset --download tinyshakespeare
 python -m fblt.dataset --verify tinyshakespeare
 ```
 
-The manifest records the URL, version, license, source, size and expected SHA-256, and is written only after the checksum matches. Details and limits: [docs/DATASETS.md](DATASETS.md).
+The manifest records the URL, version, license, source, size and expected SHA-256, and is written only after the checksum matches. Details and limits: [DATASETS.md](DATASETS.md).
 
 ### Data pipeline
 
