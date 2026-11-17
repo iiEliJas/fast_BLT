@@ -196,7 +196,8 @@ static void blt_resolve_resume(args_t *a) {
         snprintf(optim, sizeof(optim), "%.*s.fbop", (int)(n - 5), resolved);
     else snprintf(optim, sizeof(optim), "%s.fbop", resolved);
     if (BLT_ACCESS(optim, BLT_R_OK) == 0) a->load_optim_path = optim;
-    else fprintf(stderr, "[CKPT] warning: no optimizer state at %s; optimizer restarts cold\n", optim);
+    else if (a->optimizer == 1)
+        fprintf(stderr, "[CKPT] warning: no optimizer state at %s; AdamW restarts cold\n", optim);
 
     if (a->start_step_given) {
         printf("[CKPT] continuing at step %zu\n", a->start_step);
@@ -1374,7 +1375,9 @@ int main(int argc, char **argv) {
         excl_s += blt_time_sec() - post0;
     }
 
-    if (a.save_path) {
+    // --steps 0 is the documented eval-only path: load, evaluate, exit. Writing
+    // here would rewrite the checkpoint a --resume pointer names for no gain.
+    if (a.save_path && a.steps > 0) {
         char path_buf[4096];
         blt_format_save_path(path_buf, sizeof(path_buf), a.save_path, end_step);
         char meta_buf[4096];
@@ -1448,7 +1451,7 @@ int main(int argc, char **argv) {
         }
         bpb = (ce_sum / (double)eval_count) / log(2.0);
         final_masked_acc = total ? (double)hits / (double)total : 0.0;
-        if (a.save_best_path) {
+        if (a.save_best_path && a.steps > 0) {
             const double metric = (a.best_metric == 0) ? bpb : final_masked_acc;
             const int valid = (a.best_metric == 0) ? isfinite(bpb) : (total > 0);
             const int improved =
