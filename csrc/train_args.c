@@ -85,6 +85,9 @@ static void usage(void) {
                     "I/O:\n"
                     "  --save-weights PATH     write weights after training (first %%d is replaced by step)\n"
                     "  --save-every N          save checkpoint every N steps (0 = only at end)\n"
+                    "  --save-dir DIR   write DIR/checkpoints/step_%%06d.fblt (+ .fbop) and latest/best pointers\n"
+                    "  --resume auto|latest|best   load the newest/best checkpoint under --save-dir and continue its "
+                    "step counter\n"
                     "  --load-weights PATH     load weights before training\n"
                     "  --save-optim PATH       write AdamW moments + step counter alongside the weights\n"
                     "  --load-optim PATH       restore AdamW moments + step counter (needs --load-weights)\n"
@@ -100,6 +103,39 @@ static void usage(void) {
                     "  --batch-log FILE            batch properties per step\n"
                     "  --loss-log FILE             per-optimizer-step loss (micro-batch average)\n");
     exit(1);
+}
+
+// Builds "<dir>/checkpoints/<leaf>" into buf, refusing a truncated result.
+static void save_dir_path(char *buf, const char *dir, const char *leaf) {
+    const int n = snprintf(buf, BLT_TRAIN_PATH_MAX, "%s/checkpoints/%s", dir, leaf);
+    BLT_REQUIRE(n > 0 && (size_t)n < BLT_TRAIN_PATH_MAX, "train_blt_d: --save-dir path is too long");
+}
+
+// --save-dir supplies defaults only: an explicit --save-weights/--save-optim/
+// --save-best always wins, and the generated templates are stored in the args
+// struct so the pointers outlive argv.
+static void apply_save_dir(args_t *a) {
+    if (a->resume_mode != BLT_RESUME_OFF) {
+        if (a->save_dir == NULL) BLT_FATAL("train_blt_d: --resume requires --save-dir");
+        if (a->load_path != NULL || a->load_optim_path != NULL)
+            BLT_FATAL("train_blt_d: --resume cannot be combined with --load-weights/--load-optim");
+    }
+    if (a->save_dir == NULL) return;
+
+    if (a->save_path == NULL) {
+        save_dir_path(a->save_dir_paths[0], a->save_dir, "step_%06d.fblt");
+        a->save_path = a->save_dir_paths[0];
+    }
+    if (a->save_optim_path == NULL) {
+        save_dir_path(a->save_dir_paths[1], a->save_dir, "step_%06d.fbop");
+        a->save_optim_path = a->save_dir_paths[1];
+    }
+    // Deliberately the same template as save_path: a best checkpoint is the
+    // same weights at the same step, so it rewrites that step's file.
+    if (a->save_best_path == NULL && a->eval_path != NULL) {
+        save_dir_path(a->save_dir_paths[2], a->save_dir, "step_%06d.fblt");
+        a->save_best_path = a->save_dir_paths[2];
+    }
 }
 
 args_t parse_args(int argc, char **argv) {
@@ -124,6 +160,8 @@ args_t parse_args(int argc, char **argv) {
                 .best_metric = 0,
                 .save_best_optim_path = NULL,
                 .load_path = NULL,
+                .save_dir = NULL,
+                .resume_mode = BLT_RESUME_OFF,
                 .eval_skip = 0,
                 .monitor_every = 2000,
                 .monitor_windows = 24,
@@ -197,7 +235,14 @@ args_t parse_args(int argc, char **argv) {
         else if (!strcmp(argv[i], "--diffusion") && i + 1 < argc) a.diffusion = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--save-weights") && i + 1 < argc) a.save_path = argv[++i];
         else if (!strcmp(argv[i], "--save-every") && i + 1 < argc) a.save_every = strtoull(argv[++i], NULL, 10);
-        else if (!strcmp(argv[i], "--save-best") && i + 1 < argc) a.save_best_path = argv[++i];
+        else if (!strcmp(argv[i], "--save-dir") && i + 1 < argc) a.save_dir = argv[++i];
+        else if (!strcmp(argv[i], "--resume") && i + 1 < argc) {
+            ++i;
+            if (!strcmp(argv[i], "auto")) a.resume_mode = BLT_RESUME_AUTO;
+            else if (!strcmp(argv[i], "latest")) a.resume_mode = BLT_RESUME_LATEST;
+            else if (!strcmp(argv[i], "best")) a.resume_mode = BLT_RESUME_BEST;
+            else BLT_FATAL("train_blt_d: unknown --resume '%s' (expected auto, latest or best)", argv[i]);
+        } else if (!strcmp(argv[i], "--save-best") && i + 1 < argc) a.save_best_path = argv[++i];
         else if (!strcmp(argv[i], "--best-metric") && i + 1 < argc) {
             if (!strcmp(argv[i + 1], "bpb")) a.best_metric = 0;
             else if (!strcmp(argv[i + 1], "masked_acc")) a.best_metric = 1;
@@ -344,6 +389,8 @@ args_t parse_args(int argc, char **argv) {
 #endif
         // CPU backend is always deterministic; flag is a no-op there.
     }
+
+    apply_save_dir(&a);
 
     return a;
 }

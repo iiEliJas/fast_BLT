@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "core/backend.h"
+#include "core/platform.h"
 #include "models/local_common.h"
 
 // Stable ordering:
@@ -177,7 +178,8 @@ static void tensor_payload_read(blt_tensor *t, FILE *f, const char *name) {
 void blt_model_save(const blt_model *model, const char *path) { blt_model_save_ex(model, path, NULL); }
 
 void blt_model_save_ex(const blt_model *model, const char *path, const char *meta_json) {
-    FILE *f = fopen(path, "wb");
+    char tmp[4096];
+    FILE *f = blt_atomic_begin(path, tmp, sizeof(tmp));
     if (!f) BLT_FATAL("checkpoint save: cannot open '%s'", path);
 
     const char *meta = meta_json ? meta_json : "{}";
@@ -205,11 +207,12 @@ void blt_model_save_ex(const blt_model *model, const char *path, const char *met
         tensor_payload_write(t, f, name, path);
     }
 
-    fclose(f);
+    if (blt_atomic_end(f, tmp, path) != 0) BLT_FATAL("checkpoint save: cannot finalize '%s'", path);
 }
 
 void blt_entropy_lm_save(const blt_entropy_lm *lm, const char *path) {
-    FILE *f = fopen(path, "wb");
+    char tmp[4096];
+    FILE *f = blt_atomic_begin(path, tmp, sizeof(tmp));
     if (!f) BLT_FATAL("entropy lm save: cannot open '%s'", path);
 
     const uint32_t version = 1;
@@ -251,7 +254,7 @@ void blt_entropy_lm_save(const blt_entropy_lm *lm, const char *path) {
             BLT_FATAL("entropy lm save: write failed at '%s'", name);
         tensor_payload_write(t, f, name, path);
     }
-    fclose(f);
+    if (blt_atomic_end(f, tmp, path) != 0) BLT_FATAL("entropy lm save: cannot finalize '%s'", path);
 }
 
 void blt_entropy_lm_load(blt_entropy_lm *lm, const char *path) {

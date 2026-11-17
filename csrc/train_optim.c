@@ -5,6 +5,7 @@
 #include <string.h>
 #include "ops/vecmath.h"
 #include "core/cuda_shim.h"
+#include "core/platform.h"
 
 struct sgd_ctx {
     float lr;
@@ -253,7 +254,8 @@ static void optim_tensor_read(blt_tensor *t, FILE *f, const char *path) {
 }
 
 void adamw_state_save(const adamw_state *s, size_t global_step, const char *path) {
-    FILE *f = fopen(path, "wb");
+    char tmp[4096];
+    FILE *f = blt_atomic_begin(path, tmp, sizeof(tmp));
     if (!f) BLT_FATAL("optim save: cannot open '%s'", path);
 
     const uint32_t version = 1;
@@ -269,7 +271,7 @@ void adamw_state_save(const adamw_state *s, size_t global_step, const char *path
         optim_tensor_write(&s->flat[i].em, f, path);
         optim_tensor_write(&s->flat[i].esq, f, path);
     }
-    fclose(f);
+    if (blt_atomic_end(f, tmp, path) != 0) BLT_FATAL("optim save: cannot finalize '%s'", path);
 }
 
 void adamw_state_load(adamw_state *s, size_t *global_step_out, const char *path) {

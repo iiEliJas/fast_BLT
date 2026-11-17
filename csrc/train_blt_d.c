@@ -57,14 +57,170 @@
 #include "core/device_info.h"
 
 // Substitutes the first %d in path with step when the path is a template;
-// otherwise copies path verbatim into buf.
+// otherwise copies path verbatim into buf. A width such as %06d is honoured.
 static void blt_format_save_path(char *buf, size_t buflen, const char *path, size_t step) {
-    const char *tag = strstr(path, "%d");
+    const char *tag = strchr(path, '%');
     if (!tag) {
         snprintf(buf, buflen, "%s", path);
         return;
     }
-    snprintf(buf, buflen, "%.*s%d%s", (int)(tag - path), path, (int)step, tag + 2);
+    // Copy the conversion verbatim (flags and width only) so "%06d" keeps its
+    // zero padding; anything that is not a plain integer conversion is left
+    // alone and the path is used literally.
+    char fmt[16];
+    size_t fl = 0;
+    fmt[fl++] = '%';
+    const char *p = tag + 1;
+    while (*p && *p != 'd' && fl + 2 < sizeof(fmt)) {
+        if (*p < '0' || *p > '9') {
+            snprintf(buf, buflen, "%s", path);
+            return;
+        }
+        fmt[fl++] = *p++;
+    }
+    if (*p != 'd') {
+        snprintf(buf, buflen, "%s", path);
+        return;
+    }
+    fmt[fl++] = 'd';
+    fmt[fl] = '\0';
+    char stepbuf[64];
+    snprintf(stepbuf, sizeof(stepbuf), fmt, (int)step);
+    snprintf(buf, buflen, "%.*s%s%s", (int)(tag - path), path, stepbuf, p + 1);
+}
+
+// "<save_dir>/checkpoints": checkpoints plus the latest/best pointer files.
+static void blt_ckpt_dir(char *buf, size_t cap, const char *save_dir) {
+    snprintf(buf, cap, "%s/checkpoints", save_dir);
+}
+
+// Pointer file (latest.txt / best.txt) naming the checkpoint it points at. A
+// resume run reads it back, so a torn write must never be visible.
+static void blt_write_pointer(const char *save_dir, const char *name, const char *saved_path) {
+    char pbuf[BLT_TRAIN_PATH_MAX];
+    char tmp[BLT_TRAIN_PATH_MAX];
+    snprintf(pbuf, sizeof(pbuf), "%s/checkpoints/%s", save_dir, name);
+    BLT_REQUIRE(train_ensure_parent_dir(pbuf) == 0, "train_blt_d: cannot create %s/checkpoints", save_dir);
+    FILE *f = blt_atomic_begin(pbuf, tmp, sizeof(tmp));
+    BLT_REQUIRE(f != NULL, "train_blt_d: cannot write checkpoint pointer %s", pbuf);
+    const size_t n = strlen(saved_path);
+    int ok = (fwrite(saved_path, 1, n, f) == n) && (fputc('\n', f) != EOF);
+    if (blt_atomic_end(f, tmp, pbuf) != 0) ok = 0;
+    if (!ok) BLT_FATAL("train_blt_d: cannot write checkpoint pointer %s", pbuf);
+}
+
+// Reads a pointer file, dropping the trailing newline. Returns 0 when it holds
+// a non-empty path.
+static int blt_read_pointer(const char *path, char *out, size_t cap) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    size_t n = fread(out, 1, cap - 1, f);
+    fclose(f);
+    out[n] = '\0';
+    while (n > 0 && (out[n - 1] == '\n' || out[n - 1] == '\r')) out[--n] = '\0';
+    return n > 0 ? 0 : -1;
+}
+
+// Step encoded in a "step_000120.fblt" basename.
+static int blt_step_from_path(const char *path, size_t *step_out) {
+    const char *slash = strrchr(path, '/');
+    const char *base = slash ? slash + 1 : path;
+    const char *p = strstr(base, "step_");
+    if (!p) return 0;
+    p += 5;
+    if (*p < '0' || *p > '9') return 0;
+    *step_out = (size_t)strtoull(p, NULL, 10);
+    return 1;
+}
+
+// Checkpoint metadata shared by the periodic, end-of-run and best saves.
+// best_metric_name is NULL for plain saves; the best saves append the metric
+// that made the file win so the provenance survives into the JSON.
+static void blt_build_meta(char *buf, size_t cap, const args_t *a, size_t step, const char *best_metric_name,
+                           double best_value) {
+    const int n =
+        snprintf(buf, cap,
+                 "{\"format\":\"fblt-checkpoint\",\"format_version\":2,\"config\":{\"embed\":%zu,\"hidden\":%zu,"
+                 "\"enc_layers\":%zu,\"glob_layers\":%zu,\"dec_layers\":%zu,\"cross_attn\":\"%s\",\"d0_mode\":\"%s\","
+                 "\"diffusion\":%d,\"block_size\":%zu,\"window\":%zu},\"training\":{\"step\":%zu,\"optimizer\":\"%s\","
+                 "\"seed\":%llu}}",
+                 a->embed, a->hidden, a->enc_layers, a->glob_layers, a->dec_layers, a->cross_last ? "last" : "all",
+                 a->d0_learned ? "learned" : "zeros", a->diffusion, a->block_size, a->window, step,
+                 a->optimizer ? "adamw" : "sgd", (unsigned long long)a->seed);
+    if (best_metric_name == NULL || n <= 0 || (size_t)n + 96 > cap) return;
+    // Splice the metric object in over the closing brace of the base object.
+    snprintf(buf + n - 1, cap - (size_t)n + 1, ",\"best_metric\":{\"name\":\"%s\",\"value\":%.6f,\"step\":%zu}}",
+             best_metric_name, best_value, step);
+}
+
+// --resume: resolve the latest/best pointer under --save-dir into the ordinary
+// --load-weights / --load-optim paths and recover the step counter, so the
+// rest of the trainer needs no resume-specific branch.
+static void blt_resolve_resume(args_t *a) {
+    if (a->resume_mode == BLT_RESUME_OFF) return;
+    const char *mode = (a->resume_mode == BLT_RESUME_LATEST) ? "latest"
+                       : (a->resume_mode == BLT_RESUME_BEST) ? "best"
+                                                             : "auto";
+    // Static: the args struct points at these for the whole run. The optimizer
+    // path gets room for the ".fbop" suffix on top of a maximal weights path.
+    static char resolved[BLT_TRAIN_PATH_MAX];
+    static char optim[BLT_TRAIN_PATH_MAX + 8];
+    char dir[BLT_TRAIN_PATH_MAX];
+    char pbuf[BLT_TRAIN_PATH_MAX];
+    blt_ckpt_dir(dir, sizeof(dir), a->save_dir);
+
+    // auto prefers the best checkpoint and falls back to the newest save.
+    int found = 0;
+    if (a->resume_mode != BLT_RESUME_LATEST) {
+        snprintf(pbuf, sizeof(pbuf), "%s/checkpoints/best.txt", a->save_dir);
+        if (blt_read_pointer(pbuf, resolved, sizeof(resolved)) == 0 && BLT_ACCESS(resolved, BLT_R_OK) == 0) found = 1;
+    }
+    if (!found && a->resume_mode != BLT_RESUME_BEST) {
+        snprintf(pbuf, sizeof(pbuf), "%s/checkpoints/latest.txt", a->save_dir);
+        if (blt_read_pointer(pbuf, resolved, sizeof(resolved)) == 0 && BLT_ACCESS(resolved, BLT_R_OK) == 0) found = 1;
+    }
+    if (!found) {
+        const char *how = (a->resume_mode == BLT_RESUME_BEST)     ? "best.txt missing or its target is gone"
+                          : (a->resume_mode == BLT_RESUME_LATEST) ? "latest.txt missing or its target is gone"
+                                                                  : "neither best.txt nor latest.txt resolves";
+        BLT_FATAL("train_blt_d: --resume %s: no checkpoint under %s (%s; run with --save-dir first)", mode, dir, how);
+    }
+    a->load_path = resolved;
+    printf("[CKPT] resume %s -> %s\n", mode, resolved);
+
+    // AdamW moments sit beside the weights under the same stem.
+    const size_t n = strlen(resolved);
+    if (n > 5 && strcmp(resolved + n - 5, ".fblt") == 0)
+        snprintf(optim, sizeof(optim), "%.*s.fbop", (int)(n - 5), resolved);
+    else snprintf(optim, sizeof(optim), "%s.fbop", resolved);
+    if (BLT_ACCESS(optim, BLT_R_OK) == 0) a->load_optim_path = optim;
+    else fprintf(stderr, "[CKPT] warning: no optimizer state at %s; optimizer restarts cold\n", optim);
+
+    if (a->start_step_given) {
+        printf("[CKPT] continuing at step %zu\n", a->start_step);
+        return;
+    }
+    size_t derived = 0;
+    int have = blt_step_from_path(resolved, &derived);
+    if (!have) {
+        char meta[4096];
+        if (blt_model_read_meta(resolved, meta, sizeof(meta)) > 0) {
+            const char *tag = strstr(meta, "\"step\":");
+            if (tag) {
+                derived = (size_t)strtoull(tag + 7, NULL, 10);
+                have = 1;
+            }
+        }
+    }
+    if (have) {
+        a->start_step = derived;
+        printf("[CKPT] continuing at step %zu\n", a->start_step);
+    } else if (a->load_optim_path == NULL) {
+        BLT_FATAL("train_blt_d: --resume cannot determine the step for '%s'; pass --start-step", resolved);
+    } else {
+        // The stored AdamW step wins below; nothing to derive.
+        printf("[CKPT] continuing at the step stored in %s\n", optim);
+    }
 }
 
 //----------------------------------------------------------------------
@@ -245,6 +401,9 @@ int main(int argc, char **argv) {
         fprintf(stderr, "--grad-accum must be >= 1\n");
         return 1;
     }
+    // --resume resolves to the ordinary --load-weights/--load-optim paths, so
+    // do it before anything reads them or derives the step counter.
+    blt_resolve_resume(&a);
 
     // Load corpus
     FILE *fp = fopen(a.corpus_path, "rb");
@@ -435,6 +594,15 @@ int main(int argc, char **argv) {
         if (more_paths[i]) {
             BLT_REQUIRE(train_ensure_parent_dir(more_paths[i]) == 0, "train_blt_d: unusable path %s", more_paths[i]);
         }
+    }
+    // The pointer files are the contract --resume reads, so their directory has
+    // to exist before the first step rather than at the first save.
+    if (a.save_dir) {
+        char ptr[BLT_TRAIN_PATH_MAX];
+        snprintf(ptr, sizeof(ptr), "%s/checkpoints/latest.txt", a.save_dir);
+        BLT_REQUIRE(train_ensure_parent_dir(ptr) == 0, "train_blt_d: unusable --save-dir %s", a.save_dir);
+        snprintf(ptr, sizeof(ptr), "%s/checkpoints/best.txt", a.save_dir);
+        BLT_REQUIRE(train_ensure_parent_dir(ptr) == 0, "train_blt_d: unusable --save-dir %s", a.save_dir);
     }
 
     blt_model_grad *grad = blt_model_grad_create(model_arena, model);
@@ -1113,21 +1281,14 @@ int main(int argc, char **argv) {
             char path_buf[4096];
             blt_format_save_path(path_buf, sizeof(path_buf), a.save_path, step + 1);
             char meta_buf[4096];
-            snprintf(
-                meta_buf, sizeof(meta_buf),
-                "{\"format\":\"fblt-checkpoint\",\"format_version\":2,\"config\":{\"embed\":%zu,\"hidden\":%zu,"
-                "\"enc_layers\":%zu,\"glob_layers\":%zu,\"dec_layers\":%zu,\"cross_attn\":\"%s\",\"d0_mode\":\"%s\","
-                "\"diffusion\":%d,\"block_size\":%zu,\"window\":%zu},\"training\":{\"step\":%zu,\"optimizer\":\"%s\","
-                "\"seed\":%llu}}",
-                a.embed, a.hidden, a.enc_layers, a.glob_layers, a.dec_layers, a.cross_last ? "last" : "all",
-                a.d0_learned ? "learned" : "zeros", a.diffusion, a.block_size, a.window, step + 1,
-                a.optimizer ? "adamw" : "sgd", (unsigned long long)a.seed);
+            blt_build_meta(meta_buf, sizeof(meta_buf), &a, step + 1, NULL, 0.0);
             blt_model_save_ex(model, path_buf, meta_buf);
             if (a.save_optim_path && aw) {
                 char opath_buf[4096];
                 blt_format_save_path(opath_buf, sizeof(opath_buf), a.save_optim_path, step + 1);
                 adamw_state_save(aw, step + 1, opath_buf);
             }
+            if (a.save_dir) blt_write_pointer(a.save_dir, "latest.txt", path_buf);
             printf("[CKPT] periodic save step %zu -> %s\n", step + 1, path_buf);
             fflush(stdout);
         }
@@ -1182,12 +1343,16 @@ int main(int argc, char **argv) {
                             best_step = step + 1;
                             char path_buf[4096];
                             blt_format_save_path(path_buf, sizeof(path_buf), a.save_best_path, step + 1);
-                            blt_model_save_ex(model, path_buf, NULL);
+                            char meta_buf[4096];
+                            blt_build_meta(meta_buf, sizeof(meta_buf), &a, step + 1,
+                                           a.best_metric == 0 ? "causal_bpb" : "masked_acc", metric);
+                            blt_model_save_ex(model, path_buf, meta_buf);
                             if (a.save_best_optim_path && aw) {
                                 char opath_buf[4096];
                                 blt_format_save_path(opath_buf, sizeof(opath_buf), a.save_best_optim_path, step + 1);
                                 adamw_state_save(aw, step + 1, opath_buf);
                             }
+                            if (a.save_dir) blt_write_pointer(a.save_dir, "best.txt", path_buf);
                             printf("[BEST] step=%zu %s=%.6f -> %s\n", step + 1,
                                    a.best_metric == 0 ? "causal_bpb" : "masked_acc", metric, path_buf);
                             fflush(stdout);
@@ -1211,20 +1376,14 @@ int main(int argc, char **argv) {
         char path_buf[4096];
         blt_format_save_path(path_buf, sizeof(path_buf), a.save_path, end_step);
         char meta_buf[4096];
-        snprintf(meta_buf, sizeof(meta_buf),
-                 "{\"format\":\"fblt-checkpoint\",\"format_version\":2,\"config\":{\"embed\":%zu,\"hidden\":%zu,"
-                 "\"enc_layers\":%zu,\"glob_layers\":%zu,\"dec_layers\":%zu,\"cross_attn\":\"%s\",\"d0_mode\":\"%s\","
-                 "\"diffusion\":%d,\"block_size\":%zu,\"window\":%zu},\"training\":{\"step\":%zu,\"optimizer\":\"%s\","
-                 "\"seed\":%llu}}",
-                 a.embed, a.hidden, a.enc_layers, a.glob_layers, a.dec_layers, a.cross_last ? "last" : "all",
-                 a.d0_learned ? "learned" : "zeros", a.diffusion, a.block_size, a.window, end_step,
-                 a.optimizer ? "adamw" : "sgd", (unsigned long long)a.seed);
+        blt_build_meta(meta_buf, sizeof(meta_buf), &a, end_step, NULL, 0.0);
         blt_model_save_ex(model, path_buf, meta_buf);
         if (a.save_optim_path && aw) {
             char opath_buf[4096];
             blt_format_save_path(opath_buf, sizeof(opath_buf), a.save_optim_path, end_step);
             adamw_state_save(aw, end_step, opath_buf);
         }
+        if (a.save_dir) blt_write_pointer(a.save_dir, "latest.txt", path_buf);
         printf("[CKPT] saved weights to %s\n", path_buf);
     }
 
@@ -1297,12 +1456,16 @@ int main(int argc, char **argv) {
                 best_step = end_step;
                 char path_buf[4096];
                 blt_format_save_path(path_buf, sizeof(path_buf), a.save_best_path, end_step);
-                blt_model_save_ex(model, path_buf, NULL);
+                char meta_buf[4096];
+                blt_build_meta(meta_buf, sizeof(meta_buf), &a, end_step,
+                               a.best_metric == 0 ? "causal_bpb" : "masked_acc", metric);
+                blt_model_save_ex(model, path_buf, meta_buf);
                 if (a.save_best_optim_path && aw) {
                     char opath_buf[4096];
                     blt_format_save_path(opath_buf, sizeof(opath_buf), a.save_best_optim_path, end_step);
                     adamw_state_save(aw, end_step, opath_buf);
                 }
+                if (a.save_dir) blt_write_pointer(a.save_dir, "best.txt", path_buf);
                 printf("[BEST] step=%zu %s=%.6f -> %s\n", end_step, a.best_metric == 0 ? "causal_bpb" : "masked_acc",
                        metric, path_buf);
                 fflush(stdout);
