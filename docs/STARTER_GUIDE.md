@@ -255,16 +255,22 @@ discarded, which the startup line reports as `coverage`/`tail`. Without `--doc-b
 the trainer slices a flat stream and may cross document boundaries. Format, validation rules
 and current limits are in [DATA.md](DATA.md).
 
-### Reproducible speedruns (item 15)
+### Reproducible speedruns
 
-`fblt/speedrun.py` provides a thin reproducible runner and leaderboard aggregator:
+One command builds, prepares the sample corpus, trains a small model, evaluates held-out BPB,
+generates a sample, and writes a record with the commit, hardware, config and command:
 
 ```bash
-python -m fblt.speedrun --config configs/train/production.yaml --out runs/speedrun/run1
-python -c "from fblt.speedrun import aggregate_leaderboard; aggregate_leaderboard('runs/speedrun','runs/leaderboard.json')"
+bash scripts/speedrun.sh --out runs/speedrun
+python -m fblt.leaderboard --results runs/speedrun
 ```
 
-It records the resolved config and writes `result.json` per run; `aggregate_leaderboard` collects them into one JSON. (Training invocation integration is a follow-up; currently the runner records metadata only.)
+For several seeds or configs, `scripts/miniseries.sh --seeds 1,2,3 --configs <yaml>` loops over
+the grid and writes a leaderboard. `--dry-run` prints the planned commands without executing
+anything, which is the quickest way to check a config before spending GPU time.
+
+A `--steps 2` run is a CI smoke test and its BPB is near the 8.0 uniform-byte baseline. Schema,
+status rules and the submission checklist are in [LEADERBOARD.md](LEADERBOARD.md).
 ### Best checkpoints
 
 Save weights only when an eval metric improves:

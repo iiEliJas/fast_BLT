@@ -32,6 +32,8 @@ include = ["fblt*"]
 fblt-train = "fblt.train:main"
 fblt-infer = "fblt.infer:main"
 fblt-eval = "fblt.eval:main"
+fblt-speedrun = "fblt.speedrun:main"
+fblt-leaderboard = "fblt.leaderboard:main"
 
 [tool.ruff]
 line-length = 100
