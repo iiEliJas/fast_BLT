@@ -102,6 +102,27 @@ jobs:
           print("bpb record ok:", r["metrics"])
           PY
 
+      - name: Speedrun end-to-end (tiny)
+        run: |
+          cmake --build build --target infer
+          PYTHONPATH=. python -m fblt.speedrun --backend cpu \
+            --out runs/speedrun --no-build --steps 2 --windows 2 --new-bytes 8
+          python - <<'PY'
+          import json
+          r = json.load(open("runs/speedrun/summary.json"))
+          assert r["format"] == "fblt-speedrun/v1", r["format"]
+          assert r["schema_version"] == 1
+          assert r["git_commit"] and r["git_commit"] != "unknown"
+          assert r["metrics"]["causal_bpb"] > 0
+          assert r["artifacts"]["checkpoint_sha256"]
+          assert r["artifacts"]["generated"]
+          print("speedrun ok:", r["run_id"], r["metrics"]["causal_bpb"])
+          PY
+          PYTHONPATH=. python -m fblt.leaderboard --results runs/speedrun \
+            --out-md runs/speedrun/LEADERBOARD.md
+          test -s runs/speedrun/LEADERBOARD.md
+          grep -q "causal BPB" runs/speedrun/LEADERBOARD.md
+
       - name: Python CLI and eval tests
         run: |
           pip install pytest
@@ -267,6 +288,19 @@ jobs:
         run: |
           ruff check .
           ruff format --check .
+
+      - name: Shell syntax check
+        run: |
+          shopt -s nullglob
+          files=(scripts/*.sh)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "no shell scripts found"
+            exit 0
+          fi
+          for f in "${files[@]}"; do
+            bash -n "$f"
+            echo "ok: $f"
+          done
 
       - name: Generate sample corpus (verify script works)
         run: python fblt/scripts/build_sample_corpus.py

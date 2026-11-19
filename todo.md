@@ -43,7 +43,7 @@ full workflow, see [docs/RESEARCH_GUIDE.md](docs/RESEARCH_GUIDE.md).
 | 12 | RL / GRPO | Post-training | Open |
 | 13 | FP8 / FP16 training | Training | Done (primitives + integration, --fp8 flag) |
 | 14 | Dataset download and cache | Data | Partial (verified registry + download/verify CLI; sharding/range-resume pending) |
-| 15 | Reproducible speedrun and leaderboard | Tooling | Open |
+| 15 | Reproducible speedrun and leaderboard | Tooling | Partial (speedrun, miniseries, recursive leaderboard, CI smoke; `scaling_laws.sh` pending) |
 | 16 | Peak FLOPS/BW table and MBU | Tooling | Open (E009 profiling landed) |
 | 17 | Interactive chat CLI | Inference | Open |
 | 18 | Experiment log and negative results | Docs | Done (E009 added) |
@@ -1367,7 +1367,8 @@ manifest, and exposes a cache directory (`nanochat/dataset.py`, `nanochat/common
 
 ## 15. Reproducible speedrun and leaderboard
 
-- **Status:** Open
+- **Status:** Partial (phase 1: `scripts/speedrun.sh`, `scripts/miniseries.sh`, recursive
+  leaderboard, dry-run, CI smoke test; `scripts/scaling_laws.sh` deferred until item 6 exists)
 - **Area:** Tooling
 - **Depends on:** 4 (evaluation), 6 (scaling dial)
 
@@ -1413,6 +1414,12 @@ Prior art: nanochat ships `runs/speedrun.sh`, `runs/miniseries.sh`, and
 5. Add a contribution template for leaderboard entries. Require a config and command.
 
 6. Run the speedrun in CI on the sample corpus.
+
+Steps 1, 2, 4, 5 and 6 are implemented. Step 3 (`scripts/scaling_laws.sh`) is deferred: it
+depends on the scaling dial (item 6), so a target-FLOP recipe would be invented rather than
+derived. The speedrun writes `summary.json` (`fblt-speedrun/v1`); `fblt-leaderboard` consumes
+that schema and also accepts JSONL, so an eval-harness JSONL can be added without changing the
+reader.
 
 ### Acceptance
 

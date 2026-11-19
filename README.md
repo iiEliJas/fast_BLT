@@ -42,6 +42,13 @@ fblt-train --config configs/train/debug.yaml --backend cpu
 fblt-infer --checkpoint runs/debug-*/checkpoint.fblt --backend cpu --prompt "int main"
 ```
 
+Or run the whole pipeline (build, corpus, train, BPB eval, generation) in one step and get a
+leaderboard record with the commit and hardware attached:
+
+```bash
+bash scripts/speedrun.sh --out runs/speedrun
+```
+
 The sample corpus is built from the repository's own C/H source files (~1.1 MB) under the Apache 2.0 license. The debug config trains a tiny model in seconds. For the complete workflow, CUDA setup, custom datasets, resumption, and troubleshooting, see the [Starter Guide](docs/STARTER_GUIDE.md).
 
 ### Using your own dataset
@@ -118,6 +125,7 @@ CUDA builds default to architecture `89`; use `-DCMAKE_CUDA_ARCHITECTURES=...` f
 - [CLI Reference](docs/CLI_REFERENCE.md) - every training, inference, benchmark, and diagnostic flag.
 - [Datasets](docs/DATASETS.md) - download/cache CLI, registered datasets, checksums, and limits.
 - [Checkpoints](docs/CHECKPOINTS.md) - save directory layout, `--save-dir`/`--resume`, metadata, and crash safety.
+- [Leaderboard](docs/LEADERBOARD.md) - one-command speedrun, record schema, and how to submit a result.
 - [Benchmarks](docs/BENCHMARKS.md) - inference and CUDA performance results.
 - [Ablations](docs/ABLATIONS.md) - architecture and schedule ablation results.
 - [Research Guide](docs/RESEARCH_GUIDE.md) - how to formulate, run, and report experiments.

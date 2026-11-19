@@ -97,6 +97,81 @@ If no `--prompt` or `--prompt-file`, reads from stdin. Auto-detects model dimens
 
 ---
 
+## Python Tool: `fblt-speedrun`
+
+Installed via `pip install -e .`, also runnable as `python -m fblt.speedrun`. One command that
+builds, prepares the sample corpus, trains a small model, evaluates held-out BPB, generates a
+sample, and writes a leaderboard record. See [LEADERBOARD.md](LEADERBOARD.md) for the schema.
+
+```
+fblt-speedrun [--out DIR] [--backend cpu|cuda] [--config FILE]
+              [--steps N] [--window N] [--block-size N] [--lr F] [--seed N]
+              [--windows N] [--new-bytes N] [--prompt TEXT]
+              [--corpus FILE] [--eval-corpus FILE] [--run-id ID]
+              [--build | --no-build] [--dry-run]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--out DIR` | `runs/speedrun` | Output root: `summary.json`, `eval.json`, `generated.bin`, `ckpt/` |
+| `--backend {cpu,cuda}` | `cpu` | Build and run backend |
+| `--config FILE` | built-in tiny config | YAML config; explicit flags below still win |
+| `--steps N` | 100 | Training steps |
+| `--window N` | 128 | Bytes per window |
+| `--block-size N` | 8 | Diffusion block size |
+| `--lr F` | 0.05 | Learning rate |
+| `--seed N` | 7 | Training seed |
+| `--windows N` | 8 | Eval windows |
+| `--new-bytes N` | 32 | Bytes to generate |
+| `--prompt TEXT` | `int main` | Generation prompt |
+| `--corpus FILE` | `data/train.bin` | Training corpus; built from repo sources when missing |
+| `--eval-corpus FILE` | `data/heldout.bin` | Held-out corpus |
+| `--run-id ID` | derived | Record id; `fblt-leaderboard` dedupes on it |
+| `--build` / `--no-build` | build | Configure and build the three binaries first |
+| `--dry-run` | off | Print planned commands, create nothing, execute nothing |
+
+```bash
+bash scripts/speedrun.sh --out runs/speedrun            # fresh clone, CPU
+python -m fblt.speedrun --out /tmp/smoke --no-build --steps 2 --windows 2 --new-bytes 8
+python -m fblt.speedrun --backend cuda --out runs/cuda_speedrun --dry-run
+```
+
+The trainer runs with its working directory inside `--out`, so run logs and
+`resolved_config.yaml` stay in the run directory instead of the repo root.
+
+---
+
+## Python Tool: `fblt-leaderboard`
+
+Installed via `pip install -e .`, also runnable as `python -m fblt.leaderboard` or
+`python bench/leaderboard.py`.
+
+```
+fblt-leaderboard [--results PATH]... [--out-md FILE] [--out-jsonl FILE]
+                 [--include-synthetic] [--sort causal_bpb|steps_per_second|params]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--results PATH` | `runs` | File or directory; directories are searched recursively for `*.json`/`*.jsonl` |
+| `--out-md FILE` | stdout | Write the markdown table |
+| `--out-jsonl FILE` | none | Write the deduped records, one JSON object per line |
+| `--include-synthetic` | off | Include `synthetic`/`invalid` rows in the table |
+| `--sort KEY` | `causal_bpb` | Secondary sort: `causal_bpb`, `steps_per_second`, `params` |
+
+Records with `format != "fblt-speedrun/v1"` found while scanning a directory are skipped
+silently (eval records and resolved configs sit next to summaries); a file passed explicitly
+that does not parse produces a warning. The exit code is 1 when there are no valid records, so
+CI notices a broken summary.
+
+```bash
+python -m fblt.leaderboard --results runs/speedrun
+python -m fblt.leaderboard --results runs --out-md runs/LEADERBOARD.md \
+  --out-jsonl runs/leaderboard.jsonl
+```
+
+---
+
 ## Training: `train_blt_d`
 
 **Binary**: `build/train_blt_d` (CPU) / `build-cuda/train_blt_d` (CUDA)

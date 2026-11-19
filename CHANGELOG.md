@@ -61,8 +61,15 @@ be a minor version.
   URL or no valid checksum is rejected before anything is written. Single-file datasets only:
   no HTTP range/resume, no multi-shard download, no Windows lock fallback. See
   `docs/DATASETS.md`. (#82, #83, #97)
-- **Speedrun and leaderboard CLI scaffolding** (`fblt/speedrun.py`): result aggregation over
-  JSON files; the runner does not invoke training yet. (#81)
+- **Reproducible speedruns and a leaderboard.** `scripts/speedrun.sh` (or `fblt-speedrun`)
+  builds the backend, prepares the sample corpus, trains a small config, scores held-out BPB,
+  generates a sample and writes `summary.json` (`fblt-speedrun/v1`) with the git commit and
+  dirty flag, hardware, resolved config, exact command, corpus and checkpoint SHA-256, metrics
+  and throughput. `scripts/miniseries.sh` runs a seed/config grid and writes a leaderboard.
+  `fblt-leaderboard` scans `*.json`/`*.jsonl` recursively, validates records, dedupes by
+  `run_id`, sorts by causal BPB and marks `synthetic`/`unverified` rows instead of ranking them
+  silently; `--dry-run` prints planned commands and writes nothing. CI checks shell syntax and
+  runs a two-step speedrun end to end. See `docs/LEADERBOARD.md`. (#81)
 - **Hugging Face export/import CLI scaffolding** (`fblt/hf_export.py`): writes a minimal
   `config.json` and copies the checkpoint. It is not a tensor-level conversion to a Hugging
   Face format. (#87)
@@ -88,6 +95,12 @@ be a minor version.
 
 ### Fixed
 
+- `fblt-train` filled a default `--save-weights` path even when `--save-dir` was set, so every
+  checkpoint was written twice (once by each mechanism). The default is now skipped when
+  `--save-dir` names the file.
+- The old `aggregate_leaderboard` scanned only top-level `*.json`, so the documented
+  `runs/speedrun/run1/result.json` layout produced an empty leaderboard. Discovery is
+  recursive and invalid records are reported instead of crashing the aggregation.
 - Checkpoint writes opened the destination with `fopen(..., "wb")`, so a process killed
   mid-save truncated the previous checkpoint. Weights, AdamW state and entropy-LM files are
   now written to `<path>.tmp`, flushed, `fsync`ed (`_commit` on Windows) and renamed into
