@@ -81,6 +81,15 @@ _DEFAULT_OUTPUTS: typing.Dict[str, str] = {
 }
 
 
+def _fill_output_defaults(cfg, run_dir: str) -> None:
+    """Fill unset output paths; --save-dir already names its own checkpoint."""
+    for field_name, filename in _DEFAULT_OUTPUTS.items():
+        if field_name == "save_weights" and cfg.save_dir is not None:
+            continue
+        if getattr(cfg, field_name) is None:
+            setattr(cfg, field_name, os.path.join(run_dir, filename))
+
+
 def main() -> None:
     args, explicit = _parse_args()
 
@@ -115,10 +124,10 @@ def main() -> None:
     run_dir = os.path.join("runs", run_name)
     os.makedirs(run_dir, exist_ok=True)
 
-    # Fill default output paths for any field still None
-    for field_name, filename in _DEFAULT_OUTPUTS.items():
-        if getattr(cfg, field_name) is None:
-            setattr(cfg, field_name, os.path.join(run_dir, filename))
+    # Fill default output paths for any field still None. --save-dir already
+    # names its own checkpoint files, so filling save_weights here would write
+    # a second copy of the same weights.
+    _fill_output_defaults(cfg, run_dir)
 
     # Write resolved config
     resolved_path = os.path.join(run_dir, "resolved_config.yaml")

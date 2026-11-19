@@ -9,9 +9,9 @@ import yaml
 from fblt._config import InferConfig, TrainConfig, add_config_args, load_config
 from fblt.infer import _SHAPE_FIELDS
 from fblt.train import (
-    _DEFAULT_OUTPUTS,
     _check_yaml_no_backend,
     _derive_run_name,
+    _fill_output_defaults,
 )
 
 
@@ -220,9 +220,7 @@ def test_default_output_paths(tmp_path, monkeypatch):
     cfg.backend = "cpu"
 
     # Simulate the default path filling from train.py
-    for field_name, filename in _DEFAULT_OUTPUTS.items():
-        if getattr(cfg, field_name) is None:
-            setattr(cfg, field_name, str(run_dir / filename))
+    _fill_output_defaults(cfg, str(run_dir))
 
     assert cfg.save_weights == str(run_dir / "checkpoint.fblt")
     assert cfg.grad_norm_log == str(run_dir / "grad_norm.log")
@@ -235,12 +233,18 @@ def test_default_output_paths(tmp_path, monkeypatch):
         save_weights="custom/path/model.fblt",
     )
     cfg2.backend = "cpu"
-    for field_name, filename in _DEFAULT_OUTPUTS.items():
-        if getattr(cfg2, field_name) is None:
-            setattr(cfg2, field_name, str(run_dir / filename))
+    _fill_output_defaults(cfg2, str(run_dir))
 
     assert cfg2.save_weights == "custom/path/model.fblt"
     assert cfg2.grad_norm_log == str(run_dir / "grad_norm.log")
+
+    # --save-dir names <dir>/checkpoints/step_*.fblt, so save_weights stays unset
+    cfg3 = TrainConfig(corpus="data/train.bin", save_dir=str(tmp_path / "ckpt"))
+    cfg3.backend = "cpu"
+    _fill_output_defaults(cfg3, str(run_dir))
+
+    assert cfg3.save_weights is None
+    assert cfg3.grad_norm_log == str(run_dir / "grad_norm.log")
 
 
 # ------------------------------------------------------------------
