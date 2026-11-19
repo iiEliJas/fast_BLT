@@ -34,6 +34,16 @@ def _write_checkpoint(path, params=66, step=2):
         fh.write(b"\x00" * (params * 4))
 
 
+def _corpora(tmp_path):
+    """Small raw byte files so unit tests never depend on data/ being built."""
+    train = tmp_path / "corpus" / "train.bin"
+    heldout = tmp_path / "corpus" / "heldout.bin"
+    train.parent.mkdir(parents=True, exist_ok=True)
+    train.write_bytes(b"unit test corpus " * 64)
+    heldout.write_bytes(b"held out " * 32)
+    return train, heldout
+
+
 def _recorder(calls):
     def fake(argv, cwd=None, env=None, dry_run=False, log=print):
         argv = [str(part) for part in argv]
@@ -57,8 +67,11 @@ def test_dry_run_calls_no_command_and_creates_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(speedrun, "_run_command", _recorder(calls))
     monkeypatch.setattr(speedrun, "run_bpb_eval", lambda *a, **k: pytest.fail("eval in dry-run"))
 
+    train, heldout = _corpora(tmp_path)
     out = tmp_path / "dry"
-    record = run_speedrun(out, dry_run=True, steps=2, log=lines.append)
+    record = run_speedrun(
+        out, dry_run=True, steps=2, corpus=train, eval_corpus=heldout, log=lines.append
+    )
 
     assert record["dry_run"] is True
     assert record["format"] == SUMMARY_FORMAT
@@ -138,6 +151,7 @@ def test_summary_record_schema(tmp_path, monkeypatch):
 
     monkeypatch.setattr(speedrun, "run_bpb_eval", fake_eval)
 
+    train, heldout = _corpora(tmp_path)
     out = tmp_path / "run"
     record = run_speedrun(
         out,
@@ -145,6 +159,8 @@ def test_summary_record_schema(tmp_path, monkeypatch):
         steps=2,
         windows=2,
         new_bytes=8,
+        corpus=train,
+        eval_corpus=heldout,
         run_id="unit-run",
         log=lambda *_: None,
     )
@@ -179,7 +195,7 @@ def test_summary_record_schema(tmp_path, monkeypatch):
     assert record["dry_run"] is False
     assert isinstance(record["command"], str) and "fblt.speedrun" in record["command"]
     assert record["config"]["steps"] == 2
-    assert record["config"]["corpus"] == str((REPO_ROOT / "data" / "train.bin").resolve())
+    assert record["config"]["corpus"] == str(train.resolve())
     assert record["metrics"] == {"causal_bpb": 5.5, "masked_bpb": None, "masked_acc": 0.25}
     assert record["model"]["params"] == 66
     assert record["training"]["steps"] == 2

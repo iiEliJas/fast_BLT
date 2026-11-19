@@ -47,7 +47,9 @@ jobs:
           python-version: '3.11'
 
       - name: Install Python deps for parity generation
-        run: pip install torch --index-url https://download.pytorch.org/whl/cpu numpy pyyaml
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu numpy
+          pip install pyyaml
 
       - name: Generate parity test data
         run: python tests/py/parity_generate.py

@@ -8,7 +8,7 @@ All commands assume the repo root as working directory. Build output goes to `bu
 
 | Command | Description |
 |---------|-------------|
-| `cmake --build build --target test` | Build + run full C test suite (72 tests, ~4s) |
+| `cmake --build build --target test` | Build + run full C test suite (~4s) |
 | `cmake --build build-cuda --target test` | Same, CUDA backend |
 | `cmake --build build --target main` | Build minimal main (linking stub) |
 | `cmake --build build-cuda --target main` | Same, CUDA |
