@@ -12,43 +12,17 @@ flags are omitted. v1 checkpoints carry no metadata and need explicit flags.
 
 import argparse
 import csv
-import hashlib
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import typing
-from pathlib import Path
 
 from fblt._binary import ensure_wsl_cuda_env, resolve_binary
+from fblt._provenance import atomic_write_json as _atomic_write_json
+from fblt._provenance import git_commit as _git_commit
+from fblt._provenance import sha256_file as _sha256_file
 from fblt._runner import run_binary_captured
-
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-
-
-def _sha256_file(path) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _git_commit() -> typing.Optional[str]:
-    try:
-        proc = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=str(_REPO_ROOT),
-            capture_output=True,
-            text=True,
-        )
-    except OSError:
-        return None
-    if proc.returncode != 0:
-        return None
-    sha = proc.stdout.strip()
-    return sha or None
 
 
 def _insert_after(record: dict, anchor: str, extras: dict) -> dict:
@@ -65,23 +39,6 @@ def _insert_after(record: dict, anchor: str, extras: dict) -> dict:
     if not inserted:
         out.update(extras)
     return out
-
-
-def _atomic_write_json(path, record: dict) -> None:
-    target = os.path.abspath(os.fspath(path))
-    directory = os.path.dirname(target) or "."
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".fblt-eval-", suffix=".json")
-    try:
-        with os.fdopen(fd, "w") as fh:
-            json.dump(record, fh, indent=2)
-            fh.write("\n")
-        os.replace(tmp, target)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
 
 
 def run_bpb_eval(
