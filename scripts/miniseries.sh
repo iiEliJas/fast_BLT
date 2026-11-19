@@ -80,9 +80,10 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         *)
-            echo "miniseries.sh: unknown argument: $1" >&2
-            echo "Try --help." >&2
-            exit 2
+            # Anything else belongs to fblt.speedrun; forward it in order so
+            # `--windows 4` keeps its value. A typo surfaces in argparse.
+            PASSTHRU+=("$1")
+            shift
             ;;
     esac
 done
