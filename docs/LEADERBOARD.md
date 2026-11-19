@@ -36,8 +36,10 @@ runs/speedrun/
   metrics.jsonl         per-step training metrics
   ckpt/checkpoints/     step_*.fblt, step_*.fbop, latest.txt
   runs/speedrun-*/      resolved_config.yaml and training logs
-  LEADERBOARD.md        written by fblt-leaderboard, not by the speedrun
 ```
+
+`fblt-leaderboard` adds `LEADERBOARD.md` next to the summaries when you point it at the
+directory.
 
 Both output paths are relative to the working directory when you start the script.
 
