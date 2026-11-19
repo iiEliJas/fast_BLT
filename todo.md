@@ -43,7 +43,7 @@ full workflow, see [docs/RESEARCH_GUIDE.md](docs/RESEARCH_GUIDE.md).
 | 12 | RL / GRPO | Post-training | Open |
 | 13 | FP8 / FP16 training | Training | Done (primitives + integration, --fp8 flag) |
 | 14 | Dataset download and cache | Data | Partial (verified registry + download/verify CLI; sharding/range-resume pending) |
-| 15 | Reproducible speedrun and leaderboard | Tooling | Partial (speedrun, miniseries, recursive leaderboard, CI smoke; `scaling_laws.sh` pending) |
+| 15 | Reproducible speedrun and leaderboard | Tooling | Partial (PR #99: speedrun, miniseries, recursive leaderboard, CI smoke; `scaling_laws.sh` pending) |
 | 16 | Peak FLOPS/BW table and MBU | Tooling | Open (E009 profiling landed) |
 | 17 | Interactive chat CLI | Inference | Open |
 | 18 | Experiment log and negative results | Docs | Done (E009 added) |
@@ -1367,8 +1367,9 @@ manifest, and exposes a cache directory (`nanochat/dataset.py`, `nanochat/common
 
 ## 15. Reproducible speedrun and leaderboard
 
-- **Status:** Partial (phase 1: `scripts/speedrun.sh`, `scripts/miniseries.sh`, recursive
-  leaderboard, dry-run, CI smoke test; `scripts/scaling_laws.sh` deferred until item 6 exists)
+- **Status:** Partial (PR #99, phase 1: `scripts/speedrun.sh`, `scripts/miniseries.sh`,
+  recursive leaderboard, dry-run, CI smoke test; `scripts/scaling_laws.sh` deferred until
+  item 6 exists)
 - **Area:** Tooling
 - **Depends on:** 4 (evaluation), 6 (scaling dial)
 

@@ -69,7 +69,7 @@ be a minor version.
   `fblt-leaderboard` scans `*.json`/`*.jsonl` recursively, validates records, dedupes by
   `run_id`, sorts by causal BPB and marks `synthetic`/`unverified` rows instead of ranking them
   silently; `--dry-run` prints planned commands and writes nothing. CI checks shell syntax and
-  runs a two-step speedrun end to end. See `docs/LEADERBOARD.md`. (#81)
+  runs a two-step speedrun end to end. See `docs/LEADERBOARD.md`. (#81, #99)
 - **Hugging Face export/import CLI scaffolding** (`fblt/hf_export.py`): writes a minimal
   `config.json` and copies the checkpoint. It is not a tensor-level conversion to a Hugging
   Face format. (#87)
