@@ -278,7 +278,7 @@ def run_speedrun(
     dry_run=False,
     log=print,
 ) -> dict:
-    out_dir = Path(out_dir)
+    out_dir = Path(out_dir).resolve()
     cfg = _merge_config(
         config,
         {

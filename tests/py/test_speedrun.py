@@ -259,3 +259,16 @@ def test_integration_real_run(tmp_path):
     assert summary["artifacts"]["checkpoint_sha256"]
     assert (out / "generated.bin").stat().st_size > 0
     assert latest_checkpoint(str(out / "ckpt")) is not None
+
+
+def test_relative_out_dir_resolves_against_cwd(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(speedrun, "_run_command", _recorder(calls))
+    monkeypatch.chdir(tmp_path)
+
+    record = run_speedrun("rel", build=False, dry_run=True, run_id="rel")
+
+    assert Path(record["artifacts"]["out_dir"]) == (tmp_path / "rel")
+    train = next(call for call in calls if "fblt.train" in call["argv"])
+    save_dir = train["argv"][train["argv"].index("--save-dir") + 1]
+    assert save_dir == str(tmp_path / "rel" / "ckpt")
