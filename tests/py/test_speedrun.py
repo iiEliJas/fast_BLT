@@ -1,6 +1,7 @@
 import json
 import math
 import struct
+import time
 from pathlib import Path
 
 import pytest
@@ -51,6 +52,9 @@ def _recorder(calls):
         log("$ " + " ".join(argv))
         if dry_run:
             return 0
+        # A fake runner returns in microseconds; on coarse timers the measured
+        # wall time can be exactly 0, which makes throughput legitimately None.
+        time.sleep(0.005)
         if "fblt.train" in argv:
             _write_checkpoint(Path(cwd) / "ckpt" / "checkpoints" / "step_000002.fblt")
         if "fblt.infer" in argv:
