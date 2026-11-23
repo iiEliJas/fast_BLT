@@ -1150,10 +1150,39 @@ The command prints a one-row markdown table plus the JSON record, and writes the
 to `--out`. A missing checkpoint/corpus, a failed binary run, or an unsupported task
 exits non-zero without writing `--out`.
 
-### Hugging Face (fblt.hf_export)
+---
 
-| Function | Description |
-|---|---|
-| `export_to_hf(fblt_path, out_dir)` | Export checkpoint to HF-style dir (config.json + model.fblt) |
-| `import_from_hf(hf_dir, out_path)` | Import back to fBLT checkpoint |
-| `verify_roundtrip(...)` | Verify byte-identical reload |
+## Python Tool: `fblt-export-hf` / `fblt-import-hf`
+
+Installed via `pip install -e .`, also runnable as `python -m fblt.hf_export export|import|verify`.
+Converts a v2 checkpoint to a Hugging Face directory (`model.safetensors`, `config.json`,
+model card, exact metadata) and back. No runtime dependency: the safetensors container is
+read/written with the standard library, and tensor payloads are copied, not re-encoded.
+
+```
+fblt-export-hf --checkpoint FILE --out DIR [--overwrite]
+fblt-import-hf --hf-dir DIR --out FILE
+python -m fblt.hf_export verify --checkpoint FILE [--out DIR] [--reload FILE]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--checkpoint FILE` | — | Source `.fblt` (v2: the metadata supplies the architecture) |
+| `--out DIR` | — | Destination directory for export (`--out` on `import` is the output file) |
+| `--overwrite` | off | Replace an existing export (`config.json`, `model.safetensors`, ...) |
+| `--hf-dir DIR` | — | Directory produced by `--export` |
+| `--reload FILE` | temp file | `verify`: where to write the re-imported checkpoint |
+
+```bash
+fblt-export-hf --checkpoint runs/toy/model.fblt --out runs/toy/hf
+fblt-import-hf --hf-dir runs/toy/hf --out runs/toy/restored.fblt
+python -m fblt.hf_export verify --checkpoint runs/toy/model.fblt
+```
+
+The export is an interchange format, not a `transformers` architecture: `AutoModel` will
+not load it without a custom model class. Tensor names, the `qkv_proj` layout, the
+`config.json` schema, what the metadata can and cannot reconstruct, and the validation
+rules are in [CHECKPOINTS.md](CHECKPOINTS.md#hugging-face-export).
+
+Python helpers in `fblt/hf_export.py`: `export_to_hf`, `import_from_hf`,
+`verify_roundtrip`, `fblt_tensor_to_hf`, `hf_tensor_to_fblt`.

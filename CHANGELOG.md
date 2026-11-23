@@ -70,9 +70,15 @@ be a minor version.
   `run_id`, sorts by causal BPB and marks `synthetic`/`unverified` rows instead of ranking them
   silently; `--dry-run` prints planned commands and writes nothing. CI checks shell syntax and
   runs a two-step speedrun end to end. See `docs/LEADERBOARD.md`. (#81, #99)
-- **Hugging Face export/import CLI scaffolding** (`fblt/hf_export.py`): writes a minimal
-  `config.json` and copies the checkpoint. It is not a tensor-level conversion to a Hugging
-  Face format. (#87)
+- **Hugging Face checkpoint export and import** (`fblt-export-hf`, `fblt-import-hf`): a v2
+  checkpoint converts to a real HF directory — `model.safetensors` with F32 payloads under a
+  documented, bijective `blt.*` tensor namespace, a `config.json` carrying HF-style keys plus
+  the fBLT architecture, a model card, and the exact metadata — and imports back to a
+  byte-identical `.fblt`. The safetensors container is read and written with the standard
+  library, payloads are streamed rather than loaded, and export/import reject a missing,
+  truncated, v1 or metadata-inconsistent checkpoint. `python -m fblt.hf_export verify`
+  performs a real round-trip. This is an interchange format, not a `transformers`
+  architecture: `AutoModel` cannot instantiate BLT. See `docs/CHECKPOINTS.md`. (#87)
 - CI: CUDA syntax check on Ubuntu 24.04, plus the Python CLI, eval and regression tests in the
   `linux-test` job. (#62, #91, #95)
 
@@ -98,6 +104,10 @@ be a minor version.
 - `fblt-train` filled a default `--save-weights` path even when `--save-dir` was set, so every
   checkpoint was written twice (once by each mechanism). The default is now skipped when
   `--save-dir` names the file.
+- The old Hugging Face "round-trip" copied the `.fblt` blob into the export directory and
+  verified it by reading both files whole, so it proved nothing and could exhaust memory on a
+  real checkpoint. Export now maps and validates tensors, and verification compares payloads
+  and hashes in chunks.
 - The old `aggregate_leaderboard` scanned only top-level `*.json`, so the documented
   `runs/speedrun/run1/result.json` layout produced an empty leaderboard. Discovery is
   recursive and invalid records are reported instead of crashing the aggregation.
