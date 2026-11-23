@@ -403,9 +403,12 @@ def run_speedrun(
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    started = time.monotonic()
+    # perf_counter has the highest resolution available; time.monotonic on
+    # Windows only advances on the ~15.6 ms timer tick, which turns short runs
+    # into a measured 0.0 s and a null throughput.
+    started = time.perf_counter()
     rc = _run_command(train_cmd, cwd=out_dir, env=env, dry_run=False, log=log)
-    wall_seconds = time.monotonic() - started
+    wall_seconds = time.perf_counter() - started
     if rc != 0:
         raise RuntimeError(f"training failed with exit code {rc}")
 

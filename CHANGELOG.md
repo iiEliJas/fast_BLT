@@ -104,6 +104,9 @@ be a minor version.
 - `fblt-train` filled a default `--save-weights` path even when `--save-dir` was set, so every
   checkpoint was written twice (once by each mechanism). The default is now skipped when
   `--save-dir` names the file.
+- The speedrun measured training time with `time.monotonic`, which on Windows advances on the
+  ~15.6 ms timer tick. A short run could measure `0.0 s` and report a null throughput; the
+  measurement now uses `time.perf_counter`.
 - The old Hugging Face "round-trip" copied the `.fblt` blob into the export directory and
   verified it by reading both files whole, so it proved nothing and could exhaust memory on a
   real checkpoint. Export now maps and validates tensors, and verification compares payloads
