@@ -124,7 +124,7 @@ CUDA builds default to architecture `89`; use `-DCMAKE_CUDA_ARCHITECTURES=...` f
 - [Starter Guide](docs/STARTER_GUIDE.md) - installation, first run, training, inference, checkpoints, evaluation, and troubleshooting.
 - [CLI Reference](docs/CLI_REFERENCE.md) - every training, inference, benchmark, and diagnostic flag.
 - [Datasets](docs/DATASETS.md) - download/cache CLI, registered datasets, checksums, and limits.
-- [Checkpoints](docs/CHECKPOINTS.md) - save directory layout, `--save-dir`/`--resume`, metadata, and crash safety.
+- [Checkpoints](docs/CHECKPOINTS.md) - save directory layout, `--save-dir`/`--resume`, metadata, crash safety, and Hugging Face export.
 - [Leaderboard](docs/LEADERBOARD.md) - one-command speedrun, record schema, and how to submit a result.
 - [Benchmarks](docs/BENCHMARKS.md) - inference and CUDA performance results.
 - [Ablations](docs/ABLATIONS.md) - architecture and schedule ablation results.

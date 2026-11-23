@@ -49,7 +49,7 @@ full workflow, see [docs/RESEARCH_GUIDE.md](docs/RESEARCH_GUIDE.md).
 | 18 | Experiment log and negative results | Docs | Done (E009 added) |
 | 19 | Test coverage for new subsystems | Testing | Open |
 | 20 | Architecture experiments | Research | Exploratory |
-| 21 | Hugging Face checkpoint and model integration | Integration | Open |
+| 21 | Hugging Face checkpoint and model integration | Integration | Done (PR #100: safetensors export/import, documented tensor map, byte-identical round-trip) |
 | 22 | FineWeb/DCLM corpus pipeline | Data | Open |
 | 23 | Tokenizer/BPE hybrid patching modes | Data | Open |
 | 24 | Official-scale configuration and scaling matrix | Training | Open |
@@ -1775,7 +1775,8 @@ These appeared in the nanochat experiment log but are not good first candidates 
 
 ## 21. Hugging Face checkpoint and model integration
 
-**Status:** Open
+**Status:** Done (PR #100: tensor-level `model.safetensors` export/import, documented `blt.*`
+tensor map, byte-identical round-trip, CLI, CI round-trip)
 **Area:** Integration
 
 ### Why
@@ -1798,6 +1799,16 @@ loading helpers for `LMTransformer` and `ByteLatentTransformer`. fBLT currently 
 3. Document required metadata: architecture, patching, entropy LM, block size, and training
    config.
 4. Add tests that round-trip a tiny checkpoint through the new format.
+
+Implemented in `fblt/hf_export.py` + `fblt/_safetensors.py`, with streaming layout helpers in
+`fblt/_checkpoint.py`. Export writes `model.safetensors` (F32, `blt.*` names), a `config.json`
+with HF keys plus the fBLT architecture and inference settings, the exact metadata bytes, and a
+model card; import reconstructs a v2 `.fblt` byte-for-byte. `scripts` entry points
+`fblt-export-hf`/`fblt-import-hf`, and `python -m fblt.hf_export verify` does a real round-trip.
+The export is an interchange format, not a `transformers` architecture (`AutoModel` cannot
+instantiate BLT). Entropy patching and the entropy LM are not stored in the checkpoint and are
+recorded as `null`; the head count, RoPE theta, RMSNorm epsilon and ngram sizes are compiled-in
+values and are labelled as such.
 
 ### Acceptance
 

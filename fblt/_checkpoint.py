@@ -40,13 +40,13 @@ def _read_exact(fh, size, what):
     return data
 
 
-def _parse_header(fh):
-    """Read magic/version/metadata from an open handle; returns (version, meta)."""
+def _parse_header_raw(fh):
+    """Read magic/version/metadata; returns (version, raw_meta_bytes, parsed_meta)."""
     if fh.read(4) != _MAGIC:
         raise ValueError("not an fblt checkpoint: bad magic")
     (version,) = struct.unpack("<I", _read_exact(fh, 4, "version"))
     if version == 1:
-        return version, None
+        return version, None, None
     if version != 2:
         if version > 2:
             raise ValueError(
@@ -57,9 +57,15 @@ def _parse_header(fh):
     if meta_len > _MAX_META_LEN:
         raise ValueError("meta_len too large")
     if meta_len == 0:
-        return version, {}
+        return version, b"", {}
     raw = _read_exact(fh, meta_len, "metadata")
-    return version, json.loads(raw.decode("utf-8"))
+    return version, raw, json.loads(raw.decode("utf-8"))
+
+
+def _parse_header(fh):
+    """Read magic/version/metadata from an open handle; returns (version, meta)."""
+    version, _, meta = _parse_header_raw(fh)
+    return version, meta
 
 
 def _read_header(path):
@@ -81,8 +87,15 @@ def _tensor_count(fh):
     return count
 
 
-def _iter_tensors(fh, count, file_size):
-    """Yield (name, numel) per tensor, seeking past payloads instead of reading them."""
+class TensorLayout(typing.NamedTuple):
+    name: str
+    shape: typing.Tuple[int, ...]
+    offset: int
+    nbytes: int
+
+
+def _iter_tensor_layouts(fh, count, file_size):
+    """Yield TensorLayout per tensor, seeking past payloads instead of reading them."""
     for index in range(count):
         raw_len = fh.read(2)
         if len(raw_len) != 2:
@@ -104,10 +117,38 @@ def _iter_tensors(fh, count, file_size):
         for dim in dims:
             numel *= dim
         start = fh.tell()
-        if start + numel * 4 > file_size:
+        nbytes = numel * 4
+        if start + nbytes > file_size:
             raise ValueError(f"checkpoint truncated at tensor '{name}'")
-        fh.seek(start + numel * 4)
-        yield name, numel
+        fh.seek(start + nbytes)
+        yield TensorLayout(name, tuple(dims), start, nbytes)
+
+
+def _iter_tensors(fh, count, file_size):
+    """Yield (name, numel) per tensor, seeking past payloads instead of reading them."""
+    for layout in _iter_tensor_layouts(fh, count, file_size):
+        yield layout.name, layout.nbytes // 4
+
+
+def tensor_layout(path):
+    """Return (version, raw_metadata_bytes_or_None, TensorLayouts) in file order.
+
+    Only header fields are read; payloads are seeked over. Raises ValueError for
+    a bad magic, an unsupported version or a truncated header/entry.
+    """
+    with open(path, "rb") as fh:
+        size = os.fstat(fh.fileno()).st_size
+        version, raw, _ = _parse_header_raw(fh)
+        count = _tensor_count(fh)
+        layouts = list(_iter_tensor_layouts(fh, count, size))
+    return version, raw, layouts
+
+
+def read_meta_raw(path):
+    """Return the exact metadata bytes of a v2 checkpoint, or None for v1."""
+    with open(path, "rb") as fh:
+        _, raw, _ = _parse_header_raw(fh)
+    return raw
 
 
 def _walk(path):
