@@ -78,7 +78,7 @@ be a minor version.
   library, payloads are streamed rather than loaded, and export/import reject a missing,
   truncated, v1 or metadata-inconsistent checkpoint. `python -m fblt.hf_export verify`
   performs a real round-trip. This is an interchange format, not a `transformers`
-  architecture: `AutoModel` cannot instantiate BLT. See `docs/CHECKPOINTS.md`. (#87)
+  architecture: `AutoModel` cannot instantiate BLT. See `docs/CHECKPOINTS.md`. (#87, #100)
 - CI: CUDA syntax check on Ubuntu 24.04, plus the Python CLI, eval and regression tests in the
   `linux-test` job. (#62, #91, #95)
 
